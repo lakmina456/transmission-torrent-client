@@ -12,6 +12,7 @@ import http.server
 import json
 import mimetypes
 import os
+from http import HTTPStatus
 import shutil
 import urllib.error
 import urllib.parse
@@ -51,6 +52,31 @@ def rpc_call(method, args={}):
         raise
 
 
+def forward_rpc(body, client_sid=''):
+    """Proxy an RPC POST to Transmission, absorbing the 409 session handshake."""
+    global _session_id
+    sid = client_sid or _session_id
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Transmission-Session-Id': sid,
+    }
+    req = urllib.request.Request(TRANSMISSION_RPC, data=body, headers=headers, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+            new_sid = resp.headers.get('X-Transmission-Session-Id', '') or sid
+            _session_id = new_sid
+            return resp.status, new_sid, data
+    except urllib.error.HTTPError as e:
+        new_sid = e.headers.get('X-Transmission-Session-Id', '') or sid
+        if e.code == 409 and new_sid and new_sid != sid:
+            _session_id = new_sid
+            return forward_rpc(body, new_sid)
+        if new_sid:
+            _session_id = new_sid
+        return e.code, new_sid, e.read()
+
+
 def get_download_dir():
     global _download_dir
     if _download_dir:
@@ -81,6 +107,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/downloads/'):
             self._serve_download()
+        elif self.path.startswith('/.well-known/'):
+            # Chrome DevTools probes this path; no file exists in static root
+            self.send_error(HTTPStatus.NOT_FOUND)
         else:
             super().do_GET()
 
@@ -148,29 +177,13 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
             return
 
-        global _session_id
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length) if length else b'{}'
+        client_sid = self.headers.get('X-Transmission-Session-Id', '')
 
-        headers = {
-            'Content-Type': 'application/json',
-            'X-Transmission-Session-Id': self.headers.get('X-Transmission-Session-Id', _session_id),
-        }
-
-        req = urllib.request.Request(TRANSMISSION_RPC, data=body, headers=headers, method='POST')
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = resp.read()
-                sid  = resp.headers.get('X-Transmission-Session-Id', '')
-                if sid:
-                    _session_id = sid
-                self._send_rpc_response(resp.status, sid, data)
-        except urllib.error.HTTPError as e:
-            data = e.read()
-            sid  = e.headers.get('X-Transmission-Session-Id', '')
-            if sid:
-                _session_id = sid
-            self._send_rpc_response(e.code, sid, data)
+            status, sid, data = forward_rpc(body, client_sid)
+            self._send_rpc_response(status, sid, data)
         except Exception as e:
             msg = f'Proxy error: {e}'.encode()
             self._send_rpc_response(502, '', msg, ct='text/plain')
@@ -189,8 +202,17 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # Only log RPC calls and errors; suppress noisy static asset GETs
-        code = args[1] if len(args) > 1 else ''
-        path = args[0] if args else ''
+        path = getattr(self, 'path', '')
+        if path.startswith('/.well-known/'):
+            return
+        code = ''
+        for arg in args:
+            if isinstance(arg, HTTPStatus):
+                code = str(arg.value)
+                break
+            text = str(arg)
+            if len(text) == 3 and text.isdigit():
+                code = text
         if '/rpc' in path or '/downloads/' in path or code.startswith(('4', '5')):
             super().log_message(fmt, *args)
 

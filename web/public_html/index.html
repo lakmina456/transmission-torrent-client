@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#f4f4f5" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0e0e11" media="(prefers-color-scheme: dark)" />
   <meta name="color-scheme" content="light dark" />
   <title>CloudSeed</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -123,24 +123,37 @@
   </header>
 
   <main class="file-manager">
-    <div class="list-toolbar">
-      <label class="select-all-wrap" title="Select all">
-        <input type="checkbox" id="select-all" class="row-checkbox" />
-        <span class="checkmark"></span>
-      </label>
-      <span class="toolbar-heading">Downloads</span>
-      <div class="search-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="search" id="file-search" class="search-input" placeholder="Filter files…" autocomplete="off" />
+    <div class="list-scroll-region" id="list-scroll-region">
+      <div class="list-header-stack">
+        <div class="list-toolbar">
+          <label class="select-all-wrap" title="Select all">
+            <input type="checkbox" id="select-all" class="row-checkbox" />
+            <span class="checkmark"></span>
+          </label>
+          <span class="toolbar-heading">Downloads</span>
+          <div class="search-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="search" id="file-search" class="search-input" placeholder="Filter files…" autocomplete="off" />
+          </div>
+          <div class="sort-headers">
+            <button class="sort-btn" data-sort="size" type="button">Size</button>
+            <button class="sort-btn active desc" data-sort="date" type="button">
+              Modified
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="list-columns" id="list-columns" aria-hidden="true">
+          <span class="list-col-check"></span>
+          <span class="list-col-expand"></span>
+          <span class="list-col-icon"></span>
+          <span class="list-col-name">Name</span>
+          <span class="list-col-size">Size</span>
+          <span class="list-col-date">Modified</span>
+          <span class="list-col-actions"></span>
+        </div>
       </div>
-      <div class="sort-headers">
-        <button class="sort-btn" data-sort="size" type="button">Size</button>
-        <button class="sort-btn active desc" data-sort="date" type="button">
-          Modified
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-      </div>
-    </div>
 
     <div class="status-banner connecting" id="status-banner" hidden>
       <div class="spinner sm"></div>
@@ -176,17 +189,8 @@
       <button class="btn-primary btn-retry" id="btn-retry" type="button">Retry</button>
     </div>
 
-    <div class="list-columns" id="list-columns" aria-hidden="true">
-      <span class="list-col-check"></span>
-      <span class="list-col-expand"></span>
-      <span class="list-col-icon"></span>
-      <span class="list-col-name">Name</span>
-      <span class="list-col-size">Size</span>
-      <span class="list-col-date">Modified</span>
-      <span class="list-col-actions"></span>
-    </div>
-
     <div class="file-list" id="file-list" role="list"></div>
+    </div>
 
     <div class="speed-graph-panel" id="speed-graph-panel">
       <div class="speed-graph-resize-handle" id="speed-graph-resize" title="Drag to resize graph" aria-label="Drag to resize speed graph"></div>
@@ -587,7 +591,10 @@
 
     <div class="picker-loading" id="picker-loading">
       <div class="spinner sm"></div>
-      <span>Reading torrent metadata…</span>
+      <span id="picker-loading-text">Reading torrent metadata…</span>
+      <div class="picker-loading-bar" id="picker-loading-bar" hidden aria-hidden="true">
+        <div class="picker-loading-fill" id="picker-loading-fill"></div>
+      </div>
     </div>
 
     <div class="picker-body" id="picker-body" hidden>

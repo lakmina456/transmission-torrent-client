@@ -9,7 +9,6 @@ const RPC_PATH    = CFG.rpcPath          || '../rpc';
 const FILE_BASE   = CFG.fileServerBase   || '/downloads';
 const ZIP_BASE    = CFG.zipServerBase    || '/zip';
 const POLL_MS     = CFG.pollInterval     || 3000;
-const TOTAL_GB    = CFG.totalStorageGB   || 45;
 const APP_NAME    = CFG.appName          || 'CloudSeed';
 const AUTO_PASTE  = CFG.autoPasteMagnet  !== false;
 const ZIP_WARN_GB = CFG.zipWarnThresholdGB || 4;
@@ -22,6 +21,7 @@ const GRAPH_MAX_H     = 420;
 const WISHLIST_KEY = 'cloudseed-wishlist';
 const THEME_KEY    = 'cloudseed-theme';
 
+let pollTimer     = null;
 let sessionId     = sessionStorage.getItem('tr-session-id') || '';
 let torrents      = {};
 let currentFilter = 'all';
@@ -469,15 +469,57 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-async function waitForTorrentFiles(id, maxAttempts = 120) {
+function isMagnetSource(args) {
+  return (args.filename || '').trim().toLowerCase().startsWith('magnet:');
+}
+
+function updatePickerLoadingProgress(t, metaPct) {
+  const textEl = document.getElementById('picker-loading-text');
+  const barEl  = document.getElementById('picker-loading-bar');
+  const fillEl = document.getElementById('picker-loading-fill');
+  const nameEl = document.getElementById('picker-torrent-name');
+
+  if (nameEl && t?.name) nameEl.textContent = t.name;
+
+  const pct = Math.round(Math.max(0, Math.min(1, metaPct ?? 0)) * 100);
+  if (textEl) {
+    textEl.textContent = pct > 0 && pct < 100
+      ? `Reading torrent metadata… ${pct}%`
+      : pct >= 100
+        ? 'Preparing file list…'
+        : 'Connecting to peers…';
+  }
+  if (barEl && fillEl) {
+    if (pct > 0 && pct < 100) {
+      barEl.hidden = false;
+      fillEl.style.width = `${pct}%`;
+    } else if (pct >= 100) {
+      barEl.hidden = false;
+      fillEl.style.width = '100%';
+    } else {
+      barEl.hidden = true;
+      fillEl.style.width = '0%';
+    }
+  }
+}
+
+async function waitForTorrentFiles(id, { signal, needsMetadata = false } = {}) {
+  const delays = [0, 80, 120, 150, 200, 250, 300, 400, 500];
+  const maxAttempts = needsMetadata ? 180 : 15;
+
   for (let i = 0; i < maxAttempts; i++) {
+    if (signal?.aborted) throw new Error('cancelled');
+
     const data = await rpc('torrent-get', { ids: [+id], fields: PICKER_FIELDS });
     const t = data?.arguments?.torrents?.[0];
     if (t?.files?.length) return t;
+
     const meta = t?.metadataPercentComplete ?? 0;
-    if (meta >= 1 && t) return t;
-    await sleep(500);
+    updatePickerLoadingProgress(t, needsMetadata ? meta : 1);
+
+    await sleep(delays[Math.min(i, delays.length - 1)]);
   }
+
   throw new Error('Timed out waiting for torrent metadata');
 }
 
@@ -552,7 +594,7 @@ function renderPickerItems(t, selected) {
   }
 }
 
-async function openTorrentFilePicker(torrentId, { isNew = true } = {}) {
+async function openTorrentFilePicker(torrentId, { isNew = true, needsMetadata = false } = {}) {
   const dlg = document.getElementById('torrent-files-dialog');
   const loading = document.getElementById('picker-loading');
   const body = document.getElementById('picker-body');
@@ -560,15 +602,23 @@ async function openTorrentFilePicker(torrentId, { isNew = true } = {}) {
   const nameEl = document.getElementById('picker-torrent-name');
   if (!dlg) return;
 
-  pendingPicker = { torrentId: +torrentId, isNew, selected: new Set() };
-  if (nameEl) nameEl.textContent = 'Loading…';
+  const abort = new AbortController();
+  pendingPicker = { torrentId: +torrentId, isNew, selected: new Set(), abort, needsMetadata };
+  if (nameEl) nameEl.textContent = needsMetadata ? 'Fetching metadata…' : 'Loading…';
+  updatePickerLoadingProgress(null, 0);
   if (loading) loading.hidden = false;
   if (body) body.hidden = true;
   if (startBtn) startBtn.disabled = true;
   dlg.showModal();
 
   try {
-    const t = await waitForTorrentFiles(torrentId);
+    const t = await waitForTorrentFiles(torrentId, { signal: abort.signal, needsMetadata });
+    if (!t?.files?.length) throw new Error('no files');
+
+    if (needsMetadata) {
+      try { await rpc('torrent-stop', { ids: [+torrentId] }); } catch {}
+    }
+
     torrents[t.id] = { ...torrents[t.id], ...t };
     pendingPicker.torrent = t;
     pendingPicker.selected = new Set(
@@ -583,7 +633,8 @@ async function openTorrentFilePicker(torrentId, { isNew = true } = {}) {
     if (loading) loading.hidden = true;
     if (body) body.hidden = false;
     if (startBtn) startBtn.disabled = pendingPicker.selected.size === 0;
-  } catch {
+  } catch (e) {
+    if (e?.message === 'cancelled') return;
     if (loading) loading.hidden = true;
     toast('Could not load torrent files', 'error');
     if (pendingPicker?.isNew) {
@@ -625,6 +676,7 @@ async function cancelTorrentFilePicker() {
   const dlg = document.getElementById('torrent-files-dialog');
   const picker = pendingPicker;
   pendingPicker = null;
+  picker?.abort?.abort();
   if (picker?.isNew && picker.torrentId) {
     try { await removeTorrent(picker.torrentId, false); } catch {}
     await poll();
@@ -635,8 +687,12 @@ async function cancelTorrentFilePicker() {
 async function addTorrentWithPicker(args, label) {
   const btn = document.getElementById('btn-add-torrent');
   btn?.classList.add('loading');
+  const magnet = isMagnetSource(args);
   try {
-    const r = await rpc('torrent-add', { ...args, paused: true });
+    const r = await rpc('torrent-add', {
+      ...args,
+      paused: !magnet,
+    });
     if (r.result !== 'success') {
       toast(r.result || 'Failed to add torrent', 'error');
       return;
@@ -647,10 +703,16 @@ async function addTorrentWithPicker(args, label) {
       await poll();
       return;
     }
+    if (magnet) {
+      await rpc('torrent-start', { ids: [+id] });
+    }
     if (r.arguments['torrent-duplicate']) {
       toast('Torrent already exists — adjust file selection', 'info');
     }
-    await openTorrentFilePicker(id, { isNew: !r.arguments['torrent-duplicate'] });
+    await openTorrentFilePicker(id, {
+      isNew: !r.arguments['torrent-duplicate'],
+      needsMetadata: magnet,
+    });
   } catch {
     toast(`Cannot add ${label || 'torrent'}`, 'error');
   } finally {
@@ -753,9 +815,38 @@ function buildTorrentFilesPanel(t) {
 
 function toggleTorrentExpand(id) {
   const key = +id;
+  const t = torrents[key];
+  if (!t || !torrentHasFileList(t)) return;
+
   if (expandedTorrents.has(key)) expandedTorrents.delete(key);
   else expandedTorrents.add(key);
+
+  const groupEl = document.querySelector(`[data-group-id="${key}"]`);
+  if (groupEl) {
+    syncTorrentRowExpand(groupEl, t);
+    return;
+  }
   renderList(Object.values(torrents));
+}
+
+function syncTorrentRowExpand(groupEl, t) {
+  const expanded = expandedTorrents.has(t.id);
+  groupEl.classList.toggle('expanded', expanded);
+
+  const btn = groupEl.querySelector('.row-expand-btn');
+  if (btn) {
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    btn.title = expanded ? 'Hide files' : 'Show files';
+  }
+
+  const panel = groupEl.querySelector('.torrent-files-panel');
+  if (expanded && !panel) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildTorrentFilesPanel(t);
+    groupEl.appendChild(tmp.firstElementChild);
+  } else if (!expanded && panel) {
+    panel.remove();
+  }
 }
 
 async function setSingleFileWanted(torrentId, fileIndex, wanted) {
@@ -935,13 +1026,18 @@ async function addWishlistToSystem(singleId = null) {
   let added = 0;
   for (const item of items) {
     try {
-      const r = await rpc('torrent-add', { filename: item.url, paused: true });
+      const magnet = isMagnetSource({ filename: item.url });
+      const r = await rpc('torrent-add', { filename: item.url, paused: !magnet });
       if (r.result === 'success') {
         const id = getTorrentIdFromAddResponse(r);
         if (id) {
+          if (magnet) await rpc('torrent-start', { ids: [+id] });
           removeFromWishlist(item.id);
           added++;
-          await openTorrentFilePicker(id, { isNew: !r.arguments['torrent-duplicate'] });
+          await openTorrentFilePicker(id, {
+            isNew: !r.arguments['torrent-duplicate'],
+            needsMetadata: magnet,
+          });
           break;
         }
       }
@@ -988,16 +1084,24 @@ function toggleWishlistDropdown() {
 }
 
 // ── RPC ───────────────────────────────────────────────────────
-async function rpc(method, args = {}) {
+const SESSION_HEADER = 'X-Transmission-Session-Id';
+
+async function rpc(method, args = {}, retried = false) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (sessionId) headers[SESSION_HEADER] = sessionId;
+
   const res = await fetch(RPC_PATH, {
     method: 'POST',
-    headers: { 'Content-Type':'application/json', 'X-Transmission-Session-Id': sessionId },
+    headers,
     body: JSON.stringify({ method, arguments: args }),
   });
+
   if (res.status === 409) {
-    sessionId = res.headers.get('X-Transmission-Session-Id') || '';
+    const sid = res.headers.get(SESSION_HEADER) || '';
+    if (!sid || retried) throw new Error('RPC session handshake failed');
+    sessionId = sid;
     sessionStorage.setItem('tr-session-id', sessionId);
-    return rpc(method, args);
+    return rpc(method, args, true);
   }
   if (!res.ok) throw new Error(`RPC ${res.status}`);
   const ct = res.headers.get('Content-Type') || '';
@@ -1008,8 +1112,29 @@ async function rpc(method, args = {}) {
 }
 
 async function initSession() {
-  try { await rpc('session-get', { fields: ['version'] }); }
-  catch { /* retry on poll */ }
+  await rpc('session-get', { fields: ['version'] });
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(poll, POLL_MS);
+}
+
+async function connectToDaemon() {
+  showStatusBanner('Connecting…');
+  showView('empty');
+  setConnected(false);
+  try {
+    await initSession();
+    const ok = await poll();
+    if (!ok) throw new Error('offline');
+    startPolling();
+  } catch {
+    hideStatusBanner();
+    setConnected(false);
+    showView('offline');
+    startPolling();
+  }
 }
 
 function isAddableTorrentUrl(text) {
@@ -1454,7 +1579,7 @@ function buildRow(t, hasFiles, expanded) {
 
   const expandSlot = hasFiles
     ? `<div class="row-expand-slot">
-        <button class="row-expand-btn" data-id="${t.id}" type="button" title="Show files" aria-expanded="${expanded ? 'true' : 'false'}">${ICON.chevron}</button>
+        <button class="row-expand-btn" data-id="${t.id}" type="button" title="${expanded ? 'Hide files' : 'Show files'}" aria-expanded="${expanded ? 'true' : 'false'}">${ICON.chevron}</button>
       </div>`
     : '';
 
@@ -1501,21 +1626,23 @@ function smartUpdateRow(groupEl, t) {
   const newStatus = getStatus(t).cls;
   const hasFiles = torrentHasFileList(t);
   const expanded = expandedTorrents.has(t.id);
+  const panel = groupEl.querySelector('.torrent-files-panel');
+  const isDomExpanded = groupEl.classList.contains('expanded');
 
-  if (newStatus !== el.dataset.status || (hasFiles && expanded && !groupEl.querySelector('.torrent-files-panel'))) {
+  if (newStatus !== el.dataset.status
+    || expanded !== isDomExpanded
+    || (hasFiles && expanded && !panel)
+    || (!expanded && panel)) {
     const tmp = document.createElement('div');
     tmp.innerHTML = buildRowGroup(t);
     groupEl.replaceWith(tmp.firstElementChild);
     return;
   }
 
-  if (hasFiles && expanded) {
-    const panel = groupEl.querySelector('.torrent-files-panel');
-    if (panel) {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = buildTorrentFilesPanel(t);
-      panel.replaceWith(tmp.firstElementChild);
-    }
+  if (hasFiles && expanded && panel) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildTorrentFilesPanel(t);
+    panel.replaceWith(tmp.firstElementChild);
   }
 
   const fill = el.querySelector('.progress-fill');
@@ -1574,10 +1701,19 @@ async function updateStorage() {
     const sData = await rpc('session-get', { fields: ['download-dir'] });
     const dir   = sData?.arguments?.['download-dir'] || '/downloads';
     const fData = await rpc('free-space', { path: dir });
-    const free  = fData?.arguments?.['size-bytes'] || 0;
-    const total = TOTAL_GB * 1073741824;
+    const args  = fData?.arguments || {};
+    const free  = args['size-bytes'] ?? args.size_bytes ?? 0;
+    const total = args.total_size ?? args.totalSize ?? 0;
+
+    if (total <= 0) {
+      if (usedEl)  usedEl.textContent  = free > 0 ? `${fmtBytes(free)} free` : '—';
+      if (totalEl) totalEl.textContent = '—';
+      if (fillEl)  fillEl.style.width = '0%';
+      return;
+    }
+
     const used  = Math.max(0, total - free);
-    const pct   = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+    const pct   = Math.min(100, (used / total) * 100);
 
     if (usedEl)  usedEl.textContent  = fmtBytes(used);
     if (totalEl) totalEl.textContent = fmtBytes(total);
@@ -1621,6 +1757,7 @@ async function poll() {
       }
     }
     prevCompleted = nowDone;
+    return true;
   } catch {
     isConnected = false;
     setConnected(false);
@@ -1628,6 +1765,7 @@ async function poll() {
     updateMenuStats(getTorrentList());
     updateSpeedGraph([]);
     showView('offline');
+    return false;
   }
 }
 
@@ -1799,8 +1937,18 @@ function setupGrid() {
   document.getElementById('file-list')?.addEventListener('click', async e => {
     const expandBtn = e.target.closest('.row-expand-btn');
     if (expandBtn) {
+      e.stopPropagation();
       toggleTorrentExpand(expandBtn.dataset.id);
       return;
+    }
+
+    const row = e.target.closest('.file-row');
+    if (row && !e.target.closest('button, a, label, input, .row-actions, .row-check')) {
+      const t = torrents[row.dataset.id];
+      if (t && torrentHasFileList(t)) {
+        toggleTorrentExpand(row.dataset.id);
+        return;
+      }
     }
 
     const fileDl = e.target.closest('.torrent-file-dl-btn');
@@ -1818,7 +1966,13 @@ function setupGrid() {
 
     const editFiles = e.target.closest('.torrent-files-edit');
     if (editFiles) {
-      await openTorrentFilePicker(editFiles.dataset.tid, { isNew: false });
+      const tid = +editFiles.dataset.tid;
+      const t = torrents[tid];
+      const needsMetadata = !t?.files?.length;
+      if (needsMetadata) {
+        try { await rpc('torrent-start', { ids: [tid] }); } catch {}
+      }
+      await openTorrentFilePicker(tid, { isNew: false, needsMetadata });
       return;
     }
 
@@ -1922,6 +2076,7 @@ function setupFilters() {
 function setupRetry() {
   document.getElementById('btn-retry')?.addEventListener('click', async () => {
     showStatusBanner('Connecting…');
+    showView('empty');
     await poll();
   });
 }
@@ -2154,7 +2309,7 @@ function setupTorrentFilePicker() {
   });
 }
 
-async function init() {
+function init() {
   document.title = APP_NAME;
   const brand = document.getElementById('brand-name');
   const footer = document.getElementById('app-name-footer');
@@ -2163,12 +2318,6 @@ async function init() {
 
   loadWishlist();
   setupTheme();
-
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
-
-  await initSession();
   setupAddTorrent();
   setupFilters();
   setupSort();
@@ -2182,12 +2331,16 @@ async function init() {
   setupModals();
   setupRetry();
 
-  showStatusBanner('Connecting…');
-  await poll();
-
+  showView('empty');
   document.getElementById('app')?.classList.add('ready');
 
-  setInterval(poll, POLL_MS);
+  requestAnimationFrame(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  });
+
+  connectToDaemon();
 }
 
 document.addEventListener('DOMContentLoaded', init);

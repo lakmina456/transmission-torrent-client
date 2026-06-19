@@ -4,7 +4,6 @@ window.APP_CONFIG = {
   fileServerBase:     '/downloads',
   zipServerBase:      '/zip',
   pollInterval:       3000,
-  totalStorageGB:     500,   // set to your actual drive size in GB
   appName:            'CloudSeed',
   autoPasteMagnet:    true,
   zipWarnThresholdGB: 4,
