@@ -19,7 +19,8 @@
 - Oracle Cloud free-tier VM running **Ubuntu 22.04**
 - SSH access to the VM
 - A domain name **or** just the public IP (the guide works with IP only)
-- Your local repo: `f:\vps\transmission-torrent-client\`
+- Source repo: [github.com/lakmina456/transmission-torrent-client](https://github.com/lakmina456/transmission-torrent-client) (CloudSeed UI + deploy scripts)
+- Local clone for `scp` uploads (adjust path to your machine), e.g. `f:\vps\transmission-torrent-client\`
 
 ---
 
@@ -508,7 +509,18 @@ sudo systemctl status certbot.timer
 
 This enables the **Updates** tab in Settings: check GitHub for new commits and deploy from the UI.
 
-### 9a — GitHub deploy key (read-only)
+Repo: **https://github.com/lakmina456/transmission-torrent-client** (default branch: `main`)
+
+### 9a — Clone the repo on the VPS
+
+**Option A — HTTPS (simplest; repo is public)**
+
+```bash
+sudo mkdir -p /opt/cloudseed
+sudo git clone https://github.com/lakmina456/transmission-torrent-client.git /opt/cloudseed/src
+```
+
+**Option B — Deploy key over SSH (recommended for unattended `git pull` in the updater)**
 
 On the VPS:
 
@@ -517,7 +529,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/cloudseed_deploy -N ""
 cat ~/.ssh/cloudseed_deploy.pub
 ```
 
-In GitHub: **Repo → Settings → Deploy keys → Add deploy key** (read-only, no write access).
+In GitHub: **lakmina456/transmission-torrent-client → Settings → Deploy keys → Add deploy key** (read-only, no write access).
 
 ```bash
 cat >> ~/.ssh/config <<'EOF'
@@ -528,10 +540,11 @@ Host github-cloudseed
   IdentitiesOnly yes
 EOF
 
-git clone git@github-cloudseed:YOUR_USER/YOUR_REPO.git /opt/cloudseed/src
+sudo mkdir -p /opt/cloudseed
+sudo git clone git@github-cloudseed:lakmina456/transmission-torrent-client.git /opt/cloudseed/src
 ```
 
-> Replace `YOUR_USER/YOUR_REPO` with your private repo. Use `main` or change `CLOUDSEED_BRANCH` later.
+> To track a different branch, set `CLOUDSEED_BRANCH` in `/etc/cloudseed/deploy.env`.
 
 ### 9b — Install deploy + updater scripts
 
