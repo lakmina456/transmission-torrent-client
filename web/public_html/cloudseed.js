@@ -22,6 +22,14 @@ const GRAPH_MAX_H     = 420;
 const WISHLIST_KEY = 'cloudseed-wishlist';
 const THEME_KEY    = 'cloudseed-theme';
 
+const FILTER_OPTIONS = [
+  { key: 'all',         label: 'All' },
+  { key: 'downloading', label: 'Active' },
+  { key: 'seeding',     label: 'Seeding' },
+  { key: 'paused',      label: 'Paused' },
+  { key: 'error',       label: 'Errors' },
+];
+
 let pollTimer     = null;
 let sessionId     = sessionStorage.getItem('tr-session-id') || '';
 let torrents      = {};
@@ -31,10 +39,11 @@ let sortDesc      = true;
 let searchQuery   = '';
 let isConnected   = false;
 let prevCompleted = new Set();
-let pendingDeleteId = null;
+let pendingDeleteIds = null;
 let wishlist      = [];
 let expandedTorrents = new Set();
 let fileSelections   = new Map();
+let localFileReadyCache = new Map();
 let selectedTorrentIds = new Set();
 let pendingPicker = null;
 let speedHistory  = [];
@@ -428,11 +437,98 @@ function torrentHasFileList(t) {
   return (t.files?.length || 0) > 0;
 }
 
-function fileIsComplete(t, idx) {
+function fileBytesCompleted(t, idx) {
   const file = t.files?.[idx];
   const stat = t.fileStats?.[idx];
+  if (!file) return 0;
+  const fromStat = stat?.bytesCompleted ?? stat?.bytes_completed;
+  if (fromStat != null) return fromStat;
+  return file.bytesCompleted ?? file.bytes_completed ?? 0;
+}
+
+function fileIsComplete(t, idx) {
+  const file = t.files?.[idx];
   if (!file?.length) return false;
-  return (stat?.bytesCompleted ?? 0) >= file.length;
+  return fileBytesCompleted(t, idx) >= file.length;
+}
+
+function fileIsReady(t, idx) {
+  if (fileIsComplete(t, idx)) return true;
+  return localFileReadyCache.get(`${t.id}:${idx}`) === true;
+}
+
+async function checkLocalFileOnDisk(t, idx) {
+  const file = t.files?.[idx];
+  const key = `${t.id}:${idx}`;
+  if (!file?.length) {
+    localFileReadyCache.set(key, false);
+    return false;
+  }
+
+  if (fileBytesCompleted(t, idx) >= file.length) {
+    localFileReadyCache.set(key, true);
+    return true;
+  }
+
+  const { url, isZip } = buildDownloadTarget(t, file);
+  if (isZip) {
+    localFileReadyCache.set(key, false);
+    return false;
+  }
+
+  try {
+    const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (!r.ok) {
+      localFileReadyCache.set(key, false);
+      return false;
+    }
+    const size = parseInt(r.headers.get('Content-Length') || '0', 10);
+    const ready = size > 0 && size >= file.length;
+    localFileReadyCache.set(key, ready);
+    return ready;
+  } catch {
+    localFileReadyCache.set(key, false);
+    return false;
+  }
+}
+
+async function probeTorrentFilesLocal(torrentId) {
+  const t = torrents[torrentId];
+  if (!t?.files?.length) return;
+
+  let changed = false;
+  await Promise.all(t.files.map(async (_, idx) => {
+    const before = localFileReadyCache.get(`${torrentId}:${idx}`);
+    const ready = await checkLocalFileOnDisk(t, idx);
+    if (before !== ready) changed = true;
+  }));
+
+  if (changed && expandedTorrents.has(+torrentId)) {
+    refreshTorrentFilesPanel(torrentId);
+  }
+}
+
+function getTorrentFileStatusHtml(t, idx, selection) {
+  const wanted = fileIsWanted(t.fileStats, idx);
+  const isSelected = selection.has(idx);
+  const ready = fileIsReady(t, idx);
+  const file = t.files?.[idx];
+  const bytes = fileBytesCompleted(t, idx);
+  const pct = file?.length ? Math.round((bytes / file.length) * 100) : 0;
+
+  if (ready) {
+    return '<span class="torrent-file-status done">Ready</span>';
+  }
+  if (isSelected && !wanted) {
+    return '<span class="torrent-file-status pending">Pending</span>';
+  }
+  if (!wanted) {
+    return '<span class="torrent-file-status skipped">Skipped</span>';
+  }
+  if (pct > 0) {
+    return `<span class="torrent-file-status downloading">${pct}%</span>`;
+  }
+  return '<span class="torrent-file-status waiting">Queued</span>';
 }
 
 function fileIconHtml(filename) {
@@ -449,7 +545,7 @@ function pickerMetaText(t) {
 
 function countSelectedCompleteFiles(t, selection) {
   const sel = selection || getFileSelection(t.id);
-  return [...sel].filter(idx => fileIsComplete(t, idx)).length;
+  return [...sel].filter(idx => fileIsReady(t, idx)).length;
 }
 
 function getFileSelection(torrentId) {
@@ -465,6 +561,32 @@ function getFileSelection(torrentId) {
 
 function clearFileSelection(torrentId) {
   fileSelections.delete(+torrentId);
+}
+
+function clearTorrentFileUiSelection(torrentId) {
+  clearFileSelection(torrentId);
+  refreshTorrentFilesPanel(torrentId);
+}
+
+async function skipTorrentFiles(torrentId, indices) {
+  const key = +torrentId;
+  const t = torrents[key];
+  if (!t?.files?.length) return;
+
+  const remove = new Set(normalizeFileIndices(indices));
+  if (!remove.size) return;
+
+  const wanted = t.files
+    .map((_, i) => i)
+    .filter(i => fileIsWanted(t.fileStats, i) && !remove.has(i));
+
+  const sel = getFileSelection(key);
+  remove.forEach(i => sel.delete(i));
+
+  await applyFileSelection(key, wanted);
+  refreshTorrentFilesPanel(key);
+  toast(remove.size > 1 ? `Removed ${remove.size} files from download` : 'File removed from download', 'success');
+  await poll();
 }
 
 function setFileSelectionChecked(torrentId, idx, checked) {
@@ -632,31 +754,75 @@ async function startTorrentNow(id) {
   await rpc('torrent-start-now', { ids: [+id] });
 }
 
-async function kickTorrentDownload(torrentId, { selectionChanged = false } = {}) {
-  const t = torrents[torrentId];
+function hasIncompleteWantedFiles(t) {
+  const files = t?.files || [];
+  for (let i = 0; i < files.length; i++) {
+    if (!fileIsWanted(t.fileStats, i)) continue;
+    if (!fileIsComplete(t, i)) return true;
+  }
+  return false;
+}
+
+async function kickTorrentDownload(torrentId, { selectionChanged = false, forceStart = false } = {}) {
+  const id = +torrentId;
+  await refreshTorrent(id);
+  let t = torrents[id];
   if (!t) return;
 
-  if (t.status === 0) {
-    await startTorrentNow(torrentId);
-    return;
-  }
+  const wasPaused = t.status === 0;
+  const wasSeeding = t.status === 6;
+  const wantsAction = forceStart || selectionChanged;
 
   if (selectionChanged) {
-    try { await rpc('torrent-reannounce', { ids: [+torrentId] }); } catch {}
-    if ([4, 3, 1].includes(t.status)) {
-      await rpc('torrent-stop', { ids: [+torrentId] });
-      await startTorrentNow(torrentId);
+    try { await rpc('torrent-reannounce', { ids: [id] }); } catch {}
+  }
+
+  if (wantsAction && wasPaused) {
+    await startTorrentNow(id);
+    await sleep(200);
+    await refreshTorrent(id);
+    t = torrents[id];
+    if (t?.status === 0) {
+      await startTorrent(id);
+      await refreshTorrent(id);
     }
     return;
   }
 
-  try { await rpc('torrent-reannounce', { ids: [+torrentId] }); } catch {}
+  if (wantsAction && wasSeeding && hasIncompleteWantedFiles(t)) {
+    await startTorrent(id);
+    await refreshTorrent(id);
+    return;
+  }
+
+  if (selectionChanged && t && [1, 2, 3, 4, 5].includes(t.status)) {
+    await rpc('torrent-stop', { ids: [id] });
+    await startTorrentNow(id);
+    await refreshTorrent(id);
+    return;
+  }
+
+  if (forceStart && t?.status === 0) {
+    await startTorrentNow(id);
+    await refreshTorrent(id);
+    return;
+  }
+
+  if (forceStart && [1, 3, 5].includes(t?.status)) {
+    await startTorrentNow(id);
+    await refreshTorrent(id);
+  }
 }
 
 async function refreshTorrent(id) {
   const data = await rpc('torrent-get', { ids: [+id], fields: FIELDS });
   const t = data?.arguments?.torrents?.[0];
-  if (t) torrents[id] = { ...torrents[id], ...t };
+  if (t) {
+    torrents[id] = { ...torrents[id], ...t };
+    for (const key of [...localFileReadyCache.keys()]) {
+      if (key.startsWith(`${id}:`)) localFileReadyCache.delete(key);
+    }
+  }
   return t;
 }
 
@@ -671,6 +837,203 @@ function syncFileSelectionFromTorrent(torrentId) {
 
 function countPendingDownloadFiles(t, selection) {
   return [...selection].filter(idx => !fileIsComplete(t, idx)).length;
+}
+
+function getFileQueueState(t, idx) {
+  if (!fileIsWanted(t.fileStats, idx) || fileIsComplete(t, idx)) return null;
+  const st = t.status;
+  if (st === 4) return 'downloading';
+  if (st === 2) return 'checking';
+  if ([1, 3, 5].includes(st)) return 'queued';
+  if (st === 0) return 'pending';
+  if (st === 6 && !fileIsComplete(t, idx)) return 'pending';
+  return 'pending';
+}
+
+function collectQueueSnapshot() {
+  const buckets = {
+    downloading: [],
+    checking: [],
+    queued: [],
+    pending: [],
+  };
+
+  for (const t of getTorrentList()) {
+    const files = t.files || [];
+    if (!files.length) {
+      const si = getStatus(t);
+      if (['downloading', 'queued', 'checking'].includes(si.cls)) {
+        buckets[si.cls === 'checking' ? 'checking' : si.cls === 'downloading' ? 'downloading' : 'queued'].push({
+          torrentId: t.id,
+          torrentName: t.name,
+          fileIdx: null,
+          fileName: t.name,
+          size: t.sizeWhenDone || t.totalSize || 0,
+          pct: Math.round((t.percentDone || 0) * 100),
+          rate: t.rateDownload || 0,
+        });
+      } else if (si.cls === 'paused' && (t.percentDone || 0) < 1) {
+        buckets.pending.push({
+          torrentId: t.id,
+          torrentName: t.name,
+          fileIdx: null,
+          fileName: t.name,
+          size: t.sizeWhenDone || t.totalSize || 0,
+          pct: Math.round((t.percentDone || 0) * 100),
+          rate: 0,
+        });
+      }
+      continue;
+    }
+
+    for (let idx = 0; idx < files.length; idx++) {
+      const state = getFileQueueState(t, idx);
+      if (!state) continue;
+      const file = files[idx];
+      const stat = t.fileStats?.[idx];
+      const bytes = fileBytesCompleted(t, idx);
+      const pct = file.length && bytes != null
+        ? Math.round((bytes / file.length) * 100)
+        : 0;
+      buckets[state].push({
+        torrentId: t.id,
+        torrentName: t.name,
+        fileIdx: idx,
+        fileName: fileDisplayName(t, file, idx),
+        size: file.length || 0,
+        pct,
+        rate: state === 'downloading' ? (t.rateDownload || 0) : 0,
+      });
+    }
+  }
+
+  return buckets;
+}
+
+function queueSnapshotCounts(snapshot) {
+  return snapshot.downloading.length
+    + snapshot.checking.length
+    + snapshot.queued.length
+    + snapshot.pending.length;
+}
+
+function updateQueueBadge() {
+  const badge = document.getElementById('queue-badge');
+  if (!badge) return;
+  const n = queueSnapshotCounts(collectQueueSnapshot());
+  badge.textContent = n > 99 ? '99+' : String(n);
+  badge.hidden = n === 0;
+}
+
+function buildQueueItemRow(item, state) {
+  const pctBar = item.pct > 0 && state !== 'pending'
+    ? `<div class="queue-item-progress"><div class="queue-item-progress-fill" style="width:${Math.max(item.pct, 2)}%"></div></div>`
+    : '';
+  const meta = state === 'downloading' && item.rate > 0
+    ? `${item.pct}% · ${fmtSpeed(item.rate)}`
+    : item.pct > 0 ? `${item.pct}%` : fmtBytes(item.size);
+
+  return `<li class="queue-item" data-tid="${item.torrentId}" data-idx="${item.fileIdx ?? ''}">
+    <div class="queue-item-main">
+      <span class="queue-item-name" title="${escHtml(item.torrentName)}">${escHtml(truncate(item.fileName, 48))}</span>
+      ${item.fileIdx != null ? `<span class="queue-item-torrent">${escHtml(truncate(item.torrentName, 36))}</span>` : ''}
+      ${pctBar}
+    </div>
+    <span class="queue-item-meta">${meta}</span>
+  </li>`;
+}
+
+function renderQueuePanel() {
+  const snapshot = collectQueueSnapshot();
+  const sections = [
+    { key: 'downloading', label: 'Downloading', empty: 'Nothing downloading' },
+    { key: 'checking', label: 'Checking', empty: 'None verifying' },
+    { key: 'queued', label: 'Queued', empty: 'Queue empty' },
+    { key: 'pending', label: 'Pending / Paused', empty: 'None paused' },
+  ];
+
+  const total = queueSnapshotCounts(snapshot);
+  const summaryEl = document.getElementById('queue-summary');
+  const emptyEl = document.getElementById('queue-empty');
+  const bodyEl = document.getElementById('queue-body');
+
+  if (summaryEl) {
+    summaryEl.textContent = total > 0 ? `(${total})` : '';
+  }
+  if (emptyEl) emptyEl.hidden = total > 0;
+  if (bodyEl) bodyEl.hidden = total === 0;
+
+  for (const sec of sections) {
+    const list = document.getElementById(`queue-list-${sec.key}`);
+    const count = document.getElementById(`queue-count-${sec.key}`);
+    const sectionEl = list?.closest('.queue-section');
+    const items = snapshot[sec.key];
+    if (count) count.textContent = items.length;
+    if (sectionEl) sectionEl.hidden = items.length === 0;
+    if (!list) continue;
+    if (!items.length) {
+      list.innerHTML = '';
+    } else {
+      list.innerHTML = items.map(item => buildQueueItemRow(item, sec.key)).join('');
+    }
+  }
+
+  updateQueueBadge();
+}
+
+function isQueueOpen() {
+  const el = document.getElementById('queue-dropdown');
+  return el && !el.hidden;
+}
+
+function openQueueDropdown() {
+  closeWishlistDropdown();
+  renderQueuePanel();
+  const dropdown = document.getElementById('queue-dropdown');
+  const trigger = document.getElementById('btn-queue');
+  if (!dropdown) return;
+  dropdown.hidden = false;
+  trigger?.setAttribute('aria-expanded', 'true');
+}
+
+function closeQueueDropdown() {
+  const dropdown = document.getElementById('queue-dropdown');
+  const trigger = document.getElementById('btn-queue');
+  if (!dropdown) return;
+  dropdown.hidden = true;
+  trigger?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleQueueDropdown() {
+  if (isQueueOpen()) closeQueueDropdown();
+  else openQueueDropdown();
+}
+
+function setupQueuePanel() {
+  const wrap = document.getElementById('queue-wrap');
+
+  document.getElementById('btn-queue')?.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleQueueDropdown();
+  });
+
+  document.getElementById('queue-close')?.addEventListener('click', e => {
+    e.stopPropagation();
+    closeQueueDropdown();
+  });
+
+  wrap?.addEventListener('click', e => e.stopPropagation());
+
+  document.getElementById('queue-dropdown')?.addEventListener('click', e => {
+    const item = e.target.closest('.queue-item[data-tid]');
+    if (!item) return;
+    const tid = +item.dataset.tid;
+    expandedTorrents.add(tid);
+    closeQueueDropdown();
+    renderList(getTorrentList());
+    const group = document.querySelector(`[data-group-id="${tid}"]`);
+    group?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
 }
 
 function renderPickerItems(t, selected) {
@@ -776,7 +1139,7 @@ async function confirmTorrentFilePicker() {
       return;
     }
     await applyFileSelection(torrentId, [...selected]);
-    await kickTorrentDownload(torrentId, { selectionChanged: true });
+    await kickTorrentDownload(torrentId, { selectionChanged: true, forceStart: true });
     expandedTorrents.add(+torrentId);
     await refreshTorrent(torrentId);
     syncFileSelectionFromTorrent(torrentId);
@@ -841,7 +1204,7 @@ async function addTorrentWithPicker(args, label) {
 
 function downloadTorrentFileHttp(t, idx) {
   const file = t.files?.[idx];
-  if (!file || !fileIsComplete(t, idx)) {
+  if (!file || !fileIsReady(t, idx)) {
     toast('File is not ready to download', 'info');
     return;
   }
@@ -859,7 +1222,7 @@ async function downloadSelectedTorrentFiles(torrentId) {
   await refreshTorrent(torrentId);
   const t = torrents[torrentId];
   if (!t?.files) return;
-  const indices = [...getFileSelection(torrentId)].filter(idx => fileIsComplete(t, idx));
+  const indices = [...getFileSelection(torrentId)].filter(idx => fileIsReady(t, idx));
   if (!indices.length) {
     toast('No completed files in selection — use Start download first', 'info');
     return;
@@ -886,14 +1249,18 @@ async function startSelectedTorrentFiles(torrentId) {
     const selectionChanged = before ? selectionDiffersFromWanted(before, new Set(selected)) : true;
 
     await applyFileSelection(key, selected);
-    await kickTorrentDownload(key, { selectionChanged });
+    await kickTorrentDownload(key, { selectionChanged, forceStart: true });
     await refreshTorrent(key);
     syncFileSelectionFromTorrent(key);
 
     const after = torrents[key];
     const n = selected.length;
-    if (after?.status === 0) {
-      toast('File selection saved — torrent is paused', 'info');
+    const stillPaused = after?.status === 0;
+    const hasPending = selected.some(idx => !fileIsComplete(after, idx));
+    if (stillPaused && hasPending) {
+      toast('Could not start — torrent is still paused. Try Resume on the row.', 'error');
+    } else if (stillPaused) {
+      toast('File selection saved', 'info');
     } else if (selectionChanged) {
       toast(`Started ${n} file${n > 1 ? 's' : ''}`, 'success');
     } else {
@@ -910,41 +1277,25 @@ async function startSelectedTorrentFiles(torrentId) {
 
 function buildTorrentFilesPanel(t) {
   const files = t.files || [];
-  const stats = t.fileStats || [];
   const selection = getFileSelection(t.id);
   const completeSelected = countSelectedCompleteFiles(t, selection);
   const pendingSelected = countPendingDownloadFiles(t, selection);
   const allSelected = files.length > 0 && selection.size === files.length;
+  const selCount = selection.size;
 
   const items = files.map((file, idx) => {
-    const wanted = fileIsWanted(stats, idx);
     const isSelected = selection.has(idx);
-    const complete = fileIsComplete(t, idx);
-    const pct = stats[idx]?.bytesCompleted != null && file.length
-      ? Math.round((stats[idx].bytesCompleted / file.length) * 100)
-      : 0;
+    const ready = fileIsReady(t, idx);
     const display = escHtml(fileDisplayName(t, file, idx));
-    const ext = (file.name || '').split('.').pop();
-    const cat = fileCategory(ext);
+    const statusText = getTorrentFileStatusHtml(t, idx, selection);
 
-    let statusText = '';
-    if (isSelected && !wanted && !complete) {
-      statusText = '<span class="torrent-file-status pending">Pending</span>';
-    } else if (!wanted) {
-      statusText = '<span class="torrent-file-status skipped">Skipped</span>';
-    } else if (complete) {
-      statusText = '<span class="torrent-file-status done">Ready</span>';
-    } else if (pct > 0) {
-      statusText = `<span class="torrent-file-status">${pct}%</span>`;
-    } else {
-      statusText = '<span class="torrent-file-status waiting">Queued</span>';
-    }
-
-    const dlBtn = complete
-      ? `<button class="torrent-file-dl-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Download file">${ICON.download}</button>`
+    const dlBtn = ready
+      ? `<button class="torrent-file-dl-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Save to device">${ICON.download}</button>`
       : `<button class="torrent-file-dl-btn" type="button" disabled title="Not ready">${ICON.download}</button>`;
 
-    return `<li class="torrent-file-item${isSelected ? ' selected' : ''}" data-tid="${t.id}" data-idx="${idx}">
+    const deleteBtn = `<button class="torrent-file-delete-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Remove from download" aria-label="Remove file">${ICON.trash}</button>`;
+
+    return `<li class="torrent-file-item${isSelected ? ' selected' : ''}${ready ? ' ready' : ''}" data-tid="${t.id}" data-idx="${idx}">
       <label class="torrent-file-check">
         <input type="checkbox" class="row-checkbox torrent-file-cb" data-tid="${t.id}" data-idx="${idx}" ${isSelected ? 'checked' : ''} />
         <span class="checkmark"></span>
@@ -953,7 +1304,10 @@ function buildTorrentFilesPanel(t) {
       </label>
       <span class="torrent-file-size">${fmtBytes(file.length)}</span>
       ${statusText}
-      ${dlBtn}
+      <div class="torrent-file-actions">
+        ${dlBtn}
+        ${deleteBtn}
+      </div>
     </li>`;
   }).join('');
 
@@ -965,11 +1319,21 @@ function buildTorrentFilesPanel(t) {
     ? `<button class="torrent-files-dl-selected btn-secondary btn-sm" data-tid="${t.id}" type="button">${ICON.download} Save to device (${completeSelected})</button>`
     : '';
 
+  const bulkDeleteBtn = selCount > 0
+    ? `<button class="torrent-files-delete-selected btn-danger btn-sm" data-tid="${t.id}" type="button">${ICON.trash} Delete (${selCount})</button>`
+    : '';
+
+  const bulkCancelBtn = selCount > 0
+    ? `<button class="torrent-files-clear-sel btn-secondary btn-sm" data-tid="${t.id}" type="button">Cancel</button>`
+    : '';
+
   return `<div class="torrent-files-panel" data-tid="${t.id}">
     <div class="torrent-files-toolbar">
       <span class="torrent-files-toolbar-label">${files.length} file${files.length === 1 ? '' : 's'} · check files, then Start download (Transmission) or Save to device (browser)</span>
       <div class="torrent-files-toolbar-actions">
         <button class="torrent-files-edit btn-secondary btn-sm" data-tid="${t.id}" type="button">Edit files</button>
+        ${bulkCancelBtn}
+        ${bulkDeleteBtn}
         ${startBtn}
         ${bulkBtn}
       </div>
@@ -983,7 +1347,7 @@ function buildTorrentFilesPanel(t) {
       </label>
       <span class="torrent-files-head-size">Size</span>
       <span class="torrent-files-head-status">Status</span>
-      <span class="torrent-files-head-action" aria-hidden="true"></span>
+      <span class="torrent-files-head-action" aria-hidden="true">Actions</span>
     </div>
     <ul class="torrent-files-list">${items}</ul>
   </div>`;
@@ -1021,6 +1385,7 @@ function syncTorrentRowExpand(groupEl, t) {
     tmp.innerHTML = buildTorrentFilesPanel(t);
     groupEl.appendChild(tmp.firstElementChild);
     syncTorrentFileSelectAll(t.id);
+    void probeTorrentFilesLocal(t.id);
   } else if (!expanded && panel) {
     panel.remove();
   }
@@ -1076,6 +1441,8 @@ function setTheme(theme) {
     document.head.appendChild(el);
   }
   el.content = theme === 'dark' ? '#060608' : '#eef0f4';
+  const themeLabel = document.getElementById('menu-theme-label');
+  if (themeLabel) themeLabel.textContent = theme === 'dark' ? 'Dark' : 'Light';
   requestAnimationFrame(() => {
     const last = speedHistory[speedHistory.length - 1];
     if (document.getElementById('speed-graph')) {
@@ -1231,6 +1598,7 @@ function isWishlistOpen() {
 }
 
 function openWishlistDropdown() {
+  closeQueueDropdown();
   renderWishlist();
   const dropdown = document.getElementById('wishlist-dropdown');
   const trigger  = document.getElementById('btn-wishlist');
@@ -1449,21 +1817,86 @@ async function verifyAllTorrents() {
 async function setAltSpeed(enabled) {
   await rpc('session-set', { 'alt-speed-enabled': enabled });
   updateMenuAltSpeed(enabled);
-  toast(enabled ? 'Alternative speed limits on' : 'Alternative speed limits off', 'success');
+  toast(enabled ? 'Slow mode on' : 'Slow mode off', 'success');
 }
 
 function updateMenuAltSpeed(enabled) {
   const toggle = document.getElementById('menu-alt-speed');
   const hint = document.getElementById('menu-alt-speed-hint');
   if (toggle) toggle.checked = !!enabled;
-  if (hint) hint.textContent = enabled ? 'On' : 'Off';
+  if (hint) {
+    hint.textContent = enabled
+      ? 'Alternative speed limits on'
+      : 'Alternative speed limits off';
+  }
+}
+
+function getFilterLabel(filter) {
+  return FILTER_OPTIONS.find(o => o.key === filter)?.label || 'All';
+}
+
+function isFilterDropdownOpen() {
+  const trigger = document.getElementById('filter-dropdown-trigger');
+  return trigger?.getAttribute('aria-expanded') === 'true';
+}
+
+function closeFilterDropdown() {
+  const trigger = document.getElementById('filter-dropdown-trigger');
+  const menu = document.getElementById('filter-dropdown-menu');
+  if (!trigger || !menu) return;
+  trigger.setAttribute('aria-expanded', 'false');
+  menu.hidden = true;
+}
+
+function openFilterDropdown() {
+  const trigger = document.getElementById('filter-dropdown-trigger');
+  const menu = document.getElementById('filter-dropdown-menu');
+  if (!trigger || !menu) return;
+  trigger.setAttribute('aria-expanded', 'true');
+  menu.hidden = false;
+  menu.querySelector('.filter-dropdown-option.active')?.focus();
+}
+
+function toggleFilterDropdown() {
+  if (isFilterDropdownOpen()) closeFilterDropdown();
+  else openFilterDropdown();
+}
+
+function syncFilterDropdownUI() {
+  const label = document.getElementById('filter-dropdown-label');
+  const trigger = document.getElementById('filter-dropdown-trigger');
+  if (label) label.textContent = getFilterLabel(currentFilter);
+  if (trigger) trigger.classList.toggle('has-filter', currentFilter !== 'all');
+
+  document.querySelectorAll('.filter-dropdown-option').forEach(opt => {
+    const active = opt.dataset.filter === currentFilter;
+    opt.classList.toggle('active', active);
+    opt.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function updateFilterDropdownCounts(list) {
+  const active = list.filter(t => ['downloading', 'queued', 'checking'].includes(getStatus(t).cls)).length;
+  const seeding = list.filter(t => getStatus(t).cls === 'complete').length;
+  const paused = list.filter(t => getStatus(t).cls === 'paused').length;
+  const errors = list.filter(t => getStatus(t).cls === 'error').length;
+
+  const setCount = (id, n) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = n > 0 ? String(n) : '';
+  };
+
+  setCount('filter-count-all', list.length);
+  setCount('filter-count-downloading', active);
+  setCount('filter-count-seeding', seeding);
+  setCount('filter-count-paused', paused);
+  setCount('filter-count-error', errors);
 }
 
 function setCurrentFilter(filter) {
   currentFilter = filter;
-  document.querySelectorAll('.menu-filter').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === filter);
-  });
+  syncFilterDropdownUI();
+  closeFilterDropdown();
   renderList(getTorrentList());
 }
 
@@ -1497,8 +1930,8 @@ function updateMenuStats(list = getTorrentList()) {
     countEl.textContent = parts.join(' · ');
   }
   if (statusEl) {
-    statusEl.textContent = isConnected ? 'Connected to Transmission' : 'Disconnected';
-    statusEl.className = `menu-subtitle ${isConnected ? 'connected' : 'disconnected'}`;
+    statusEl.textContent = isConnected ? 'Connected' : 'Offline';
+    statusEl.className = `menu-conn-pill ${isConnected ? 'connected' : 'disconnected'}`;
   }
   if (pauseBtn) pauseBtn.disabled = getActiveTorrentIds().length === 0;
   if (resumeBtn) resumeBtn.disabled = getPausedTorrentIds().length === 0;
@@ -1896,9 +2329,6 @@ function setupSettings() {
 async function openMenu() {
   const dlg = document.getElementById('menu-dialog');
   if (!dlg) return;
-  document.querySelectorAll('.menu-filter').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === currentFilter);
-  });
   updateMenuStats();
   await refreshMenuSession();
   dlg.showModal();
@@ -1969,6 +2399,48 @@ function setTorrentRowSelected(id, selected) {
   group?.classList.toggle('selected', selected);
   group?.querySelector('.file-row')?.classList.toggle('selected', selected);
   syncMainSelectAll();
+  syncSelectionUI();
+}
+
+function clearTorrentSelection() {
+  selectedTorrentIds.clear();
+  document.querySelectorAll('.row-select').forEach(cb => { cb.checked = false; });
+  document.querySelectorAll('.file-row-group.selected').forEach(g => g.classList.remove('selected'));
+  document.querySelectorAll('.file-row.selected').forEach(r => r.classList.remove('selected'));
+  syncMainSelectAll();
+  syncSelectionUI();
+}
+
+function setAllTorrentsSelected(selected) {
+  const filtered = sortTorrents(Object.values(torrents).filter(matchFilter));
+
+  if (selected) {
+    filtered.forEach(t => selectedTorrentIds.add(t.id));
+  } else {
+    selectedTorrentIds.clear();
+  }
+
+  filtered.forEach(t => {
+    const group = document.querySelector(`[data-group-id="${t.id}"]`);
+    group?.classList.toggle('selected', selected);
+    group?.querySelector('.file-row')?.classList.toggle('selected', selected);
+    const cb = document.querySelector(`.row-select[data-id="${t.id}"]`);
+    if (cb) cb.checked = selected;
+  });
+
+  syncMainSelectAll();
+  syncSelectionUI();
+}
+
+function syncSelectionUI() {
+  const count = selectedTorrentIds.size;
+  const cols = document.getElementById('list-columns');
+  const deleteBtn = document.getElementById('btn-delete-selected');
+
+  cols?.classList.toggle('has-selection', count > 0);
+  if (deleteBtn) {
+    deleteBtn.textContent = count > 1 ? `Delete (${count})` : 'Delete';
+  }
 }
 
 function syncMainSelectAll() {
@@ -1994,7 +2466,7 @@ function buildRow(t, hasFiles, expanded) {
   const isActive  = [1,2,3,4,5].includes(t.status);
   const isStopped = t.status === 0;
   const isSeeding = t.status === 6;
-  const showProgress = !done || isChk || (isStopped && pct > 0 && pct < 100);
+  const showProgress = pct < 100 || isMov || isChk || isStopped;
   const fillCls = isMov ? 'shimmer' : isChk ? 'checking' : done ? 'complete' : '';
 
   const progressBlock = showProgress ? `
@@ -2026,27 +2498,36 @@ function buildRow(t, hasFiles, expanded) {
 
   const rowSelected = isTorrentRowSelected(t.id);
 
+  const rowActions = `
+    <div class="row-actions">
+      ${isActive ? `<button class="row-btn btn-pause" data-id="${t.id}" title="Pause" aria-label="Pause">${ICON.pause}</button>` : ''}
+      ${isStopped ? `<button class="row-btn btn-resume" data-id="${t.id}" title="Resume" aria-label="Resume">${ICON.play}</button>` : ''}
+      ${isSeeding ? `<button class="row-btn btn-pause" data-id="${t.id}" title="Stop seeding" aria-label="Stop seeding">${ICON.pause}</button>` : ''}
+      <button class="row-btn danger btn-delete" data-id="${t.id}" title="Delete" aria-label="Delete">${ICON.trash}</button>
+      ${done ? `<button class="row-btn row-btn-dl btn-dl-http" data-id="${t.id}" title="Download" aria-label="Download">${ICON.download}</button>` : ''}
+    </div>`;
+
   return `<div class="file-row${showProgress ? ' has-progress' : ''}${hasFiles ? '' : ' no-expand'}${rowSelected ? ' selected' : ''}" data-id="${t.id}" data-status="${si.cls}" role="listitem">
     <label class="row-check">
       <input type="checkbox" class="row-checkbox row-select" data-id="${t.id}" ${rowSelected ? 'checked' : ''} />
       <span class="checkmark"></span>
     </label>
     ${expandSlot}
-    <div class="file-type-icon cat-${cat}">${ICON[cat] || ICON.generic}</div>
-    <div class="file-info">
-      <div class="file-name" title="${escHtml(t.name)}">${escHtml(truncate(t.name))}</div>
-      <div class="file-meta-line">${statusPill}${err ? ` · <span style="color:var(--danger)">${escHtml(err)}</span>` : ''}${fileHint}</div>
+    <div class="file-row-card">
+      <div class="file-row-body">
+        <div class="file-row-top">
+          <div class="file-type-icon cat-${cat}">${ICON[cat] || ICON.generic}</div>
+          <div class="file-info">
+            <div class="file-name" title="${escHtml(t.name)}">${escHtml(truncate(t.name))}</div>
+          </div>
+          <div class="file-size-col">${size}</div>
+          <div class="file-date-col">${date}</div>
+        </div>
+        <div class="file-meta-line">${statusPill}${err ? ` · <span style="color:var(--danger)">${escHtml(err)}</span>` : ''}${fileHint}</div>
+        ${progressBlock}
+      </div>
+      ${rowActions}
     </div>
-    <div class="file-size-col">${size}</div>
-    <div class="file-date-col">${date}</div>
-    <div class="row-actions">
-      ${isActive ? `<button class="row-btn btn-pause" data-id="${t.id}" title="Pause">${ICON.pause}</button>` : ''}
-      ${isStopped ? `<button class="row-btn btn-resume" data-id="${t.id}" title="Resume">${ICON.play}</button>` : ''}
-      ${isSeeding ? `<button class="row-btn btn-pause" data-id="${t.id}" title="Stop seeding">${ICON.pause}</button>` : ''}
-      <button class="row-btn danger btn-delete" data-id="${t.id}" title="Delete permanently">${ICON.trash}</button>
-      ${done ? `<button class="row-btn row-btn-dl btn-dl-http" data-id="${t.id}" title="Download">${ICON.download}</button>` : ''}
-    </div>
-    ${progressBlock}
   </div>`;
 }
 
@@ -2127,6 +2608,7 @@ function renderList(list) {
   });
 
   syncMainSelectAll();
+  syncSelectionUI();
 }
 
 function updateSidebar(list) {
@@ -2185,10 +2667,17 @@ async function poll() {
 
     renderList(list);
     updateSidebar(list);
+    updateFilterDropdownCounts(list);
     setConnected(true);
     await updateStorage();
     updateMenuStats(list);
     updateSpeedGraph(list);
+    updateQueueBadge();
+    if (isQueueOpen()) renderQueuePanel();
+
+    for (const id of expandedTorrents) {
+      void probeTorrentFilesLocal(id);
+    }
 
     const nowDone = new Set(list.filter(t => t.percentDone >= 1 && t.status === 6).map(t => t.id));
     for (const id of nowDone) {
@@ -2228,23 +2717,39 @@ function setConnected(ok) {
 function showDeleteConfirm(id) {
   const t = torrents[id];
   if (!t) return;
-  pendingDeleteId = id;
+  pendingDeleteIds = [+id];
   document.getElementById('delete-message').textContent =
     `"${truncate(t.name, 55)}" will be removed along with all files on disk.`;
   document.getElementById('delete-dialog')?.showModal();
 }
 
+function showBulkDeleteConfirm() {
+  const ids = [...selectedTorrentIds];
+  if (!ids.length) return;
+  pendingDeleteIds = ids;
+  const msg = ids.length === 1
+    ? `"${truncate(torrents[ids[0]]?.name || 'Torrent', 55)}" will be removed along with all files on disk.`
+    : `${ids.length} torrents will be removed along with all downloaded files on disk.`;
+  document.getElementById('delete-message').textContent = msg;
+  document.getElementById('delete-dialog')?.showModal();
+}
+
 async function confirmDeletePermanent() {
-  const id = pendingDeleteId;
-  if (!id) return;
-  const row = document.querySelector(`.file-row[data-id="${id}"]`);
-  pendingDeleteId = null;
+  const ids = Array.isArray(pendingDeleteIds) ? pendingDeleteIds : [];
+  if (!ids.length) return;
+  pendingDeleteIds = null;
   document.getElementById('delete-dialog')?.close();
 
-  if (row) row.classList.add('removing');
-  await removeTorrent(id, true);
-  setTimeout(() => row?.remove(), 200);
-  toast('Deleted permanently', 'success');
+  ids.forEach(id => {
+    document.querySelector(`.file-row[data-id="${id}"]`)?.classList.add('removing');
+  });
+
+  for (const id of ids) {
+    await removeTorrent(id, true);
+  }
+
+  clearTorrentSelection();
+  toast(ids.length > 1 ? `Deleted ${ids.length} torrents` : 'Deleted permanently', 'success');
   await poll();
 }
 
@@ -2453,6 +2958,27 @@ function setupGrid() {
       return;
     }
 
+    const fileDelete = e.target.closest('.torrent-file-delete-btn');
+    if (fileDelete) {
+      e.stopPropagation();
+      await skipTorrentFiles(+fileDelete.dataset.tid, [+fileDelete.dataset.idx]);
+      return;
+    }
+
+    const bulkDelete = e.target.closest('.torrent-files-delete-selected');
+    if (bulkDelete) {
+      const tid = +bulkDelete.dataset.tid;
+      const indices = [...getFileSelection(tid)];
+      if (indices.length) await skipTorrentFiles(tid, indices);
+      return;
+    }
+
+    const clearSel = e.target.closest('.torrent-files-clear-sel');
+    if (clearSel) {
+      clearTorrentFileUiSelection(+clearSel.dataset.tid);
+      return;
+    }
+
     const btn = e.target.closest('button[data-id]');
     if (!btn) return;
     const id = btn.dataset.id;
@@ -2545,8 +3071,56 @@ function setupAddTorrent() {
   });
 }
 
+function setupFilterDropdown() {
+  const wrap = document.getElementById('toolbar-filters');
+  const trigger = document.getElementById('filter-dropdown-trigger');
+  const menu = document.getElementById('filter-dropdown-menu');
+  if (!wrap || !trigger || !menu) return;
+
+  trigger.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleFilterDropdown();
+  });
+
+  menu.addEventListener('click', e => {
+    const opt = e.target.closest('.filter-dropdown-option');
+    if (!opt) return;
+    setCurrentFilter(opt.dataset.filter);
+  });
+
+  menu.addEventListener('keydown', e => {
+    const opts = [...menu.querySelectorAll('.filter-dropdown-option')];
+    const idx = opts.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = opts[Math.min(idx + 1, opts.length - 1)] || opts[0];
+      next?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = opts[Math.max(idx - 1, 0)] || opts[opts.length - 1];
+      prev?.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      const opt = document.activeElement?.closest?.('.filter-dropdown-option');
+      if (opt) {
+        e.preventDefault();
+        setCurrentFilter(opt.dataset.filter);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFilterDropdown();
+      trigger.focus();
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (!wrap.contains(e.target)) closeFilterDropdown();
+  });
+
+  syncFilterDropdownUI();
+}
+
 function setupFilters() {
-  /* filter chips removed from UI — all torrents shown */
+  setupFilterDropdown();
 }
 
 function setupRetry() {
@@ -2575,11 +3149,11 @@ function setupSort() {
 function setupSelectAll() {
   const selectAll = document.getElementById('select-all');
   selectAll?.addEventListener('change', () => {
-    document.querySelectorAll('.row-select').forEach(cb => {
-      cb.checked = selectAll.checked;
-      setTorrentRowSelected(cb.dataset.id, selectAll.checked);
-    });
+    setAllTorrentsSelected(selectAll.checked);
   });
+
+  document.getElementById('btn-clear-selection')?.addEventListener('click', clearTorrentSelection);
+  document.getElementById('btn-delete-selected')?.addEventListener('click', showBulkDeleteConfirm);
 
   document.getElementById('file-list')?.addEventListener('change', e => {
     if (!e.target.classList.contains('row-select')) return;
@@ -2620,13 +3194,21 @@ function setupWishlist() {
   wrap?.addEventListener('click', e => e.stopPropagation());
 
   document.addEventListener('click', e => {
-    if (!isWishlistOpen()) return;
-    if (wrap?.contains(e.target)) return;
-    closeWishlistDropdown();
+    if (isWishlistOpen()) {
+      if (!wrap?.contains(e.target)) closeWishlistDropdown();
+    }
+    if (isQueueOpen()) {
+      const queueWrap = document.getElementById('queue-wrap');
+      if (!queueWrap?.contains(e.target)) closeQueueDropdown();
+    }
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && isWishlistOpen()) closeWishlistDropdown();
+    if (e.key === 'Escape') {
+      if (isFilterDropdownOpen()) closeFilterDropdown();
+      if (isWishlistOpen()) closeWishlistDropdown();
+      if (isQueueOpen()) closeQueueDropdown();
+    }
   });
 
   document.getElementById('wishlist-items')?.addEventListener('click', async e => {
@@ -2691,12 +3273,6 @@ function setupMenu() {
     }
   });
 
-  document.getElementById('menu-filters')?.addEventListener('click', e => {
-    const btn = e.target.closest('.menu-filter');
-    if (!btn) return;
-    setCurrentFilter(btn.dataset.filter);
-  });
-
   document.getElementById('menu-settings')?.addEventListener('click', async () => {
     closeDialog('menu-dialog');
     await openSettings();
@@ -2732,7 +3308,7 @@ function setupModals() {
   });
 
   document.getElementById('delete-cancel')?.addEventListener('click', () => {
-    pendingDeleteId = null;
+    pendingDeleteIds = null;
     document.getElementById('delete-dialog')?.close();
   });
   document.getElementById('delete-confirm')?.addEventListener('click', () => confirmDeletePermanent());
@@ -2793,8 +3369,10 @@ function init() {
   document.title = APP_NAME;
   const brand = document.getElementById('brand-name');
   const footer = document.getElementById('app-name-footer');
+  const menuName = document.getElementById('menu-app-name');
   if (brand) brand.textContent = APP_NAME;
   if (footer) footer.textContent = APP_NAME;
+  if (menuName) menuName.textContent = APP_NAME;
 
   loadWishlist();
   setupTheme();
@@ -2809,6 +3387,7 @@ function init() {
   setupSettings();
   setupUpdates();
   setupSpeedGraph();
+  setupQueuePanel();
   setupModals();
   setupRetry();
 

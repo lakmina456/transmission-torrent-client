@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0e0e11" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)" />
   <meta name="color-scheme" content="light dark" />
   <title>CloudSeed</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -72,6 +72,64 @@
 
       <div class="action-divider" aria-hidden="true"></div>
 
+      <div class="wishlist-dropdown-wrap" id="queue-wrap">
+        <button class="tool-btn" id="btn-queue" type="button" title="Active downloads" aria-label="Open download queue" aria-expanded="false" aria-haspopup="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span class="tool-badge" id="queue-badge" hidden>0</span>
+        </button>
+
+        <div class="wishlist-dropdown queue-dropdown" id="queue-dropdown" hidden>
+          <div class="wishlist-dropdown-header">
+            <div class="wishlist-dropdown-title">
+              <span>Active downloads</span>
+              <span class="wishlist-count" id="queue-summary"></span>
+            </div>
+            <button class="wishlist-dropdown-close" id="queue-close" type="button" aria-label="Close">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="queue-dropdown-empty" id="queue-empty" hidden>
+            <p>Nothing in progress</p>
+            <span>Downloading, queued, and paused files appear here</span>
+          </div>
+
+          <div class="queue-dropdown-body" id="queue-body">
+            <section class="queue-section">
+              <header class="queue-section-head">
+                <span class="queue-section-title downloading">Downloading</span>
+                <span class="queue-section-count" id="queue-count-downloading">0</span>
+              </header>
+              <ul class="queue-list" id="queue-list-downloading"></ul>
+            </section>
+
+            <section class="queue-section">
+              <header class="queue-section-head">
+                <span class="queue-section-title checking">Checking</span>
+                <span class="queue-section-count" id="queue-count-checking">0</span>
+              </header>
+              <ul class="queue-list" id="queue-list-checking"></ul>
+            </section>
+
+            <section class="queue-section">
+              <header class="queue-section-head">
+                <span class="queue-section-title queued">Queued</span>
+                <span class="queue-section-count" id="queue-count-queued">0</span>
+              </header>
+              <ul class="queue-list" id="queue-list-queued"></ul>
+            </section>
+
+            <section class="queue-section">
+              <header class="queue-section-head">
+                <span class="queue-section-title pending">Pending / Paused</span>
+                <span class="queue-section-count" id="queue-count-pending">0</span>
+              </header>
+              <ul class="queue-list" id="queue-list-pending"></ul>
+            </section>
+          </div>
+        </div>
+      </div>
+
       <div class="wishlist-dropdown-wrap" id="wishlist-wrap">
         <button class="tool-btn" id="btn-wishlist" type="button" title="Wishlist" aria-label="Open wishlist" aria-expanded="false" aria-haspopup="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -135,6 +193,42 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <input type="search" id="file-search" class="search-input" placeholder="Filter files…" autocomplete="off" />
           </div>
+          <div class="filter-dropdown filter-dropdown-toolbar" id="toolbar-filters">
+            <button
+              class="filter-dropdown-trigger"
+              id="filter-dropdown-trigger"
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="filter-dropdown-menu"
+              aria-label="Filter torrents"
+            >
+              <span class="filter-dropdown-label" id="filter-dropdown-label">All</span>
+              <svg class="filter-dropdown-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <ul class="filter-dropdown-menu" id="filter-dropdown-menu" role="listbox" aria-label="Filter torrents" hidden>
+              <li class="filter-dropdown-option active" role="option" data-filter="all" aria-selected="true" tabindex="-1">
+                <span class="filter-dropdown-option-label">All</span>
+                <span class="filter-dropdown-option-count" id="filter-count-all"></span>
+              </li>
+              <li class="filter-dropdown-option" role="option" data-filter="downloading" aria-selected="false" tabindex="-1">
+                <span class="filter-dropdown-option-label">Active</span>
+                <span class="filter-dropdown-option-count" id="filter-count-downloading"></span>
+              </li>
+              <li class="filter-dropdown-option" role="option" data-filter="seeding" aria-selected="false" tabindex="-1">
+                <span class="filter-dropdown-option-label">Seeding</span>
+                <span class="filter-dropdown-option-count" id="filter-count-seeding"></span>
+              </li>
+              <li class="filter-dropdown-option" role="option" data-filter="paused" aria-selected="false" tabindex="-1">
+                <span class="filter-dropdown-option-label">Paused</span>
+                <span class="filter-dropdown-option-count" id="filter-count-paused"></span>
+              </li>
+              <li class="filter-dropdown-option" role="option" data-filter="error" aria-selected="false" tabindex="-1">
+                <span class="filter-dropdown-option-label">Errors</span>
+                <span class="filter-dropdown-option-count" id="filter-count-error"></span>
+              </li>
+            </ul>
+          </div>
           <div class="sort-headers">
             <button class="sort-btn" data-sort="size" type="button">Size</button>
             <button class="sort-btn active desc" data-sort="date" type="button">
@@ -145,13 +239,20 @@
         </div>
 
         <div class="list-columns" id="list-columns" aria-hidden="true">
-          <span class="list-col-check"></span>
-          <span class="list-col-expand"></span>
-          <span class="list-col-icon"></span>
-          <span class="list-col-name">Name</span>
-          <span class="list-col-size">Size</span>
-          <span class="list-col-date">Modified</span>
-          <span class="list-col-actions"></span>
+          <div class="list-columns-labels" id="list-columns-labels">
+            <span class="list-col-check"></span>
+            <span class="list-col-expand"></span>
+            <div class="list-col-card-head">
+              <span class="list-col-icon" aria-hidden="true"></span>
+              <span class="list-col-name">Name</span>
+              <span class="list-col-size">Size</span>
+              <span class="list-col-date">Modified</span>
+            </div>
+          </div>
+          <div class="list-columns-actions" id="list-columns-actions">
+            <button class="selection-btn selection-btn-cancel" id="btn-clear-selection" type="button">Cancel</button>
+            <button class="selection-btn selection-btn-delete" id="btn-delete-selected" type="button">Delete</button>
+          </div>
         </div>
       </div>
 
@@ -228,102 +329,148 @@
 
 <dialog class="cs-dialog menu-dialog" id="menu-dialog" data-no-backdrop-close>
   <div class="dialog-panel menu-panel">
-    <div class="dialog-header">
-      <div class="menu-header-text">
-        <h2>Menu</h2>
-        <p class="menu-subtitle" id="menu-connection-status">Checking connection…</p>
-      </div>
-      <button class="dialog-close" data-close="menu-dialog" type="button" aria-label="Close">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
+    <header class="menu-hero">
+      <div class="menu-hero-inner">
+        <div class="menu-brand">
+          <img src="./images/favicon.svg" alt="" class="menu-brand-icon" width="36" height="36" />
+          <div class="menu-brand-text">
+            <h2 class="menu-brand-name" id="menu-app-name">CloudSeed</h2>
+            <span class="menu-conn-pill" id="menu-connection-status">Checking…</span>
+          </div>
+        </div>
 
-    <div class="menu-stats" id="menu-stats">
-      <div class="menu-stats-grid">
-        <div class="menu-stat">
-          <span class="menu-stat-label">Download</span>
-          <span class="menu-stat-value dl" id="menu-dl-speed">0 KB/s</span>
+        <div class="menu-metrics" id="menu-stats">
+          <div class="menu-metric">
+            <span class="menu-metric-label">Download</span>
+            <span class="menu-metric-value dl" id="menu-dl-speed">0 KB/s</span>
+          </div>
+          <div class="menu-metric-divider" aria-hidden="true"></div>
+          <div class="menu-metric">
+            <span class="menu-metric-label">Upload</span>
+            <span class="menu-metric-value ul" id="menu-ul-speed">0 KB/s</span>
+          </div>
+          <div class="menu-metric-divider" aria-hidden="true"></div>
+          <div class="menu-metric menu-metric-wide">
+            <span class="menu-metric-label">Library</span>
+            <span class="menu-metric-summary" id="menu-torrent-count">0 torrents</span>
+          </div>
         </div>
-        <div class="menu-stat">
-          <span class="menu-stat-label">Upload</span>
-          <span class="menu-stat-value ul" id="menu-ul-speed">0 KB/s</span>
-        </div>
+
+        <button class="dialog-close menu-close" data-close="menu-dialog" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
-      <p class="menu-stat-summary" id="menu-torrent-count">0 torrents</p>
-    </div>
+    </header>
 
     <div class="menu-body">
-      <section class="menu-section">
-        <h3 class="menu-section-title">Transfer</h3>
-        <div class="menu-actions-row">
-          <button class="menu-action-btn" id="menu-pause-all" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-            Pause all
-          </button>
-          <button class="menu-action-btn" id="menu-resume-all" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            Resume all
-          </button>
+      <div class="menu-grid">
+        <div class="menu-column menu-column-main">
+          <section class="menu-block">
+            <h3 class="menu-block-label">Transfer</h3>
+            <div class="menu-control-row menu-control-row-3">
+              <button class="menu-control-btn" id="menu-pause-all" type="button">
+                <span class="menu-control-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </span>
+                <span class="menu-control-label">Pause all</span>
+              </button>
+              <button class="menu-control-btn menu-control-btn-accent" id="menu-resume-all" type="button">
+                <span class="menu-control-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                </span>
+                <span class="menu-control-label">Resume all</span>
+              </button>
+              <button class="menu-control-btn menu-control-btn-warn" id="menu-clear-completed" type="button">
+                <span class="menu-control-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>
+                </span>
+                <span class="menu-control-label">Clear done</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="menu-block menu-block-system">
+            <h3 class="menu-block-label">System</h3>
+            <div class="menu-system-row">
+              <button class="menu-system-card" id="menu-updates" type="button">
+                <span class="menu-row-icon menu-row-icon-update" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </span>
+                <span class="menu-system-card-body">
+                  <span class="menu-row-title">Check for updates</span>
+                  <span class="menu-row-desc">Deploy from GitHub</span>
+                </span>
+                <span class="menu-row-badge" id="menu-update-badge" hidden>Update</span>
+              </button>
+              <button class="menu-system-card" id="menu-verify-all" type="button">
+                <span class="menu-row-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                </span>
+                <span class="menu-system-card-body">
+                  <span class="menu-row-title">Verify torrents</span>
+                  <span class="menu-row-desc">Integrity check all</span>
+                </span>
+              </button>
+            </div>
+          </section>
         </div>
-        <button class="menu-item menu-item-warn" id="menu-clear-completed" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>
-          Clear completed
-        </button>
-      </section>
 
-      <section class="menu-section">
-        <h3 class="menu-section-title">View</h3>
-        <div class="menu-filters" id="menu-filters">
-          <button class="menu-filter active" data-filter="all" type="button">All</button>
-          <button class="menu-filter" data-filter="downloading" type="button">Active</button>
-          <button class="menu-filter" data-filter="seeding" type="button">Seeding</button>
-          <button class="menu-filter" data-filter="paused" type="button">Paused</button>
-          <button class="menu-filter" data-filter="error" type="button">Errors</button>
+        <div class="menu-column menu-column-side">
+          <section class="menu-block">
+            <h3 class="menu-block-label">Quick access</h3>
+            <div class="menu-shortcut-grid">
+              <button class="menu-shortcut" id="menu-wishlist" type="button">
+                <span class="menu-shortcut-icon menu-row-icon-star" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                </span>
+                <span class="menu-shortcut-title">Wishlist</span>
+                <span class="menu-shortcut-desc">Saved links</span>
+              </button>
+              <button class="menu-shortcut" id="menu-settings" type="button">
+                <span class="menu-shortcut-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </span>
+                <span class="menu-shortcut-title">Settings</span>
+                <span class="menu-shortcut-desc">Speed &amp; network</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="menu-block">
+            <h3 class="menu-block-label">Display</h3>
+            <div class="menu-list-card">
+              <label class="menu-row menu-row-toggle" for="menu-alt-speed">
+                <span class="menu-row-icon menu-row-icon-speed" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                </span>
+                <span class="menu-row-body">
+                  <span class="menu-row-title">Slow mode</span>
+                  <span class="menu-row-desc" id="menu-alt-speed-hint">Alternative speed limits off</span>
+                </span>
+                <input type="checkbox" id="menu-alt-speed" class="menu-toggle-input" />
+                <span class="menu-toggle-switch" aria-hidden="true"></span>
+              </label>
+
+              <button class="menu-row" id="menu-theme" type="button">
+                <span class="menu-row-icon menu-row-icon-theme" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/></svg>
+                </span>
+                <span class="menu-row-body">
+                  <span class="menu-row-title">Appearance</span>
+                  <span class="menu-row-desc">Light or dark interface</span>
+                </span>
+                <span class="menu-row-pill" id="menu-theme-label">Light</span>
+              </button>
+            </div>
+          </section>
         </div>
-      </section>
-
-      <section class="menu-section">
-        <h3 class="menu-section-title">Session</h3>
-        <label class="menu-toggle-row" for="menu-alt-speed">
-          <span class="menu-toggle-label">
-            Alternative speed limits
-            <em id="menu-alt-speed-hint">Off</em>
-          </span>
-          <input type="checkbox" id="menu-alt-speed" class="menu-toggle-input" />
-          <span class="menu-toggle-switch" aria-hidden="true"></span>
-        </label>
-        <button class="menu-item" id="menu-verify-all" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          Verify all torrents
-        </button>
-      </section>
-
-      <section class="menu-section">
-        <h3 class="menu-section-title">Options</h3>
-        <button class="menu-item" id="menu-settings" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          Settings
-        </button>
-        <button class="menu-item" id="menu-updates" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Check for updates
-          <span class="menu-item-badge" id="menu-update-badge" hidden>NEW</span>
-        </button>
-        <button class="menu-item" id="menu-wishlist" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-          Wishlist
-        </button>
-        <button class="menu-item" id="menu-theme" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/></svg>
-          Toggle appearance
-        </button>
-      </section>
+      </div>
     </div>
 
-    <div class="menu-footer">
-      <span id="app-name-footer">CloudSeed</span>
+    <footer class="menu-footer">
+      <span class="menu-footer-brand" id="app-name-footer">CloudSeed</span>
       <span class="menu-version" id="menu-version"></span>
-    </div>
+    </footer>
   </div>
 </dialog>
 
