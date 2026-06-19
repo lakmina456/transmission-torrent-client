@@ -49,6 +49,7 @@ let selectedTorrentIds = new Set();
 let pendingPicker = null;
 let speedHistory  = [];
 let graphSize     = { w: 0, h: 0, dpr: 1 };
+let pollLocked    = false;
 
 const PICKER_FIELDS = [
   'id','name','files','fileStats','metadataPercentComplete','status','percentDone'
@@ -65,7 +66,7 @@ const STATUS = {
 };
 
 const FIELDS = [
-  'id','name','status','percentDone','sizeWhenDone','totalSize',
+  'id','name','status','percentDone','sizeWhenDone','totalSize','leftUntilDone',
   'rateDownload','rateUpload','eta','addedDate','downloadDir',
   'files','fileStats','error','errorString','uploadRatio',
   'uploadedEver','downloadedEver'
@@ -584,14 +585,16 @@ function getTorrentFileStatusHtml(t, idx, selection) {
       ? `<span class="torrent-file-status downloading">${pct}%</span>`
       : '<span class="torrent-file-status downloading">Downloading</span>';
   }
+  if (wanted && !fileIsComplete(t, idx)) {
+    return pct > 0
+      ? `<span class="torrent-file-status downloading">${pct}%</span>`
+      : '<span class="torrent-file-status waiting">Queued</span>';
+  }
   if (isSelected && !wanted) {
     return '<span class="torrent-file-status pending">Pending</span>';
   }
   if (!wanted) {
     return '<span class="torrent-file-status skipped">Skipped</span>';
-  }
-  if (pct > 0) {
-    return `<span class="torrent-file-status downloading">${pct}%</span>`;
   }
   return '<span class="torrent-file-status waiting">Queued</span>';
 }
@@ -828,52 +831,44 @@ function hasIncompleteWantedFiles(t) {
   return false;
 }
 
-async function kickTorrentDownload(torrentId, { selectionChanged = false, forceStart = false } = {}) {
+async function kickTorrentDownload(torrentId, { selectionChanged = false, forceStart = false, priorStatus = null } = {}) {
   const id = +torrentId;
+  const statusBefore = priorStatus ?? torrents[id]?.status ?? 0;
+
   await refreshTorrent(id);
-  let t = torrents[id];
+  const t = torrents[id];
   if (!t) return;
 
-  const wasPaused = t.status === 0;
-  const wasSeeding = t.status === 6;
   const wantsAction = forceStart || selectionChanged;
+  const needsDownload = hasIncompleteWantedFiles(t);
 
   if (selectionChanged) {
     try { await rpc('torrent-reannounce', { ids: [id] }); } catch {}
   }
 
-  if (wantsAction && wasPaused) {
+  if (!wantsAction || !needsDownload) return;
+
+  // torrent-set often resumes immediately; never interrupt an active download.
+  if (t.status === 4) return;
+
+  if (t.status === 0 || statusBefore === 0) {
     await startTorrentNow(id);
     await sleep(200);
     await refreshTorrent(id);
-    t = torrents[id];
-    if (t?.status === 0) {
+    if (torrents[id]?.status === 0) {
       await startTorrent(id);
       await refreshTorrent(id);
     }
     return;
   }
 
-  if (wantsAction && wasSeeding && hasIncompleteWantedFiles(t)) {
-    await startTorrent(id);
-    await refreshTorrent(id);
-    return;
-  }
-
-  if (selectionChanged && t && [1, 2, 3, 4, 5].includes(t.status)) {
-    await rpc('torrent-stop', { ids: [id] });
+  if (statusBefore === 6 || t.status === 6) {
     await startTorrentNow(id);
     await refreshTorrent(id);
     return;
   }
 
-  if (forceStart && t?.status === 0) {
-    await startTorrentNow(id);
-    await refreshTorrent(id);
-    return;
-  }
-
-  if (forceStart && [1, 3, 5].includes(t?.status)) {
+  if ([1, 2, 3, 5].includes(t.status)) {
     await startTorrentNow(id);
     await refreshTorrent(id);
   }
@@ -901,7 +896,7 @@ function syncFileSelectionFromTorrent(torrentId) {
 }
 
 function countPendingDownloadFiles(t, selection) {
-  return [...selection].filter(idx => !fileIsComplete(t, idx)).length;
+  return [...selection].filter(idx => !fileIsComplete(t, idx) && !fileIsWanted(t.fileStats, idx)).length;
 }
 
 function getFileQueueState(t, idx) {
@@ -1203,16 +1198,19 @@ async function confirmTorrentFilePicker() {
       if (startBtn) startBtn.disabled = false;
       return;
     }
-    await applyFileSelection(torrentId, [...selected]);
-    await kickTorrentDownload(torrentId, { selectionChanged: true, forceStart: true });
-    expandedTorrents.add(+torrentId);
-    await refreshTorrent(torrentId);
-    syncFileSelectionFromTorrent(torrentId);
-    toast(isNew ? 'Download started' : 'File selection updated', 'success');
-    pendingPicker = null;
-    dlg?.close();
-    document.getElementById('magnet-input').value = '';
-    await poll();
+    await withPollLock(async () => {
+      const priorStatus = torrents[torrentId]?.status;
+      await applyFileSelection(torrentId, [...selected]);
+      await kickTorrentDownload(torrentId, { selectionChanged: true, forceStart: true, priorStatus });
+      expandedTorrents.add(+torrentId);
+      await refreshTorrent(torrentId);
+      syncFileSelectionFromTorrent(torrentId);
+      toast(isNew ? 'Download started' : 'File selection updated', 'success');
+      pendingPicker = null;
+      dlg?.close();
+      document.getElementById('magnet-input').value = '';
+      await poll();
+    });
   } catch {
     toast('Failed to start download', 'error');
     if (startBtn) startBtn.disabled = false;
@@ -1371,30 +1369,33 @@ async function startSelectedTorrentFiles(torrentId) {
   if (btn) btn.disabled = true;
 
   try {
-    const before = torrents[key];
-    const selectionChanged = before ? selectionDiffersFromWanted(before, new Set(selected)) : true;
+    await withPollLock(async () => {
+      const before = torrents[key];
+      const priorStatus = before?.status;
+      const selectionChanged = before ? selectionDiffersFromWanted(before, new Set(selected)) : true;
 
-    await applyFileSelection(key, selected);
-    await kickTorrentDownload(key, { selectionChanged, forceStart: true });
-    await refreshTorrent(key);
-    syncFileSelectionFromTorrent(key);
+      await applyFileSelection(key, selected);
+      await kickTorrentDownload(key, { selectionChanged, forceStart: true, priorStatus });
+      await refreshTorrent(key);
+      syncFileSelectionFromTorrent(key);
 
-    const after = torrents[key];
-    const n = selected.length;
-    const stillPaused = after?.status === 0;
-    const hasPending = selected.some(idx => !fileIsComplete(after, idx));
-    if (stillPaused && hasPending) {
-      toast('Could not start — torrent is still paused. Try Resume on the row.', 'error');
-    } else if (stillPaused) {
-      toast('File selection saved', 'info');
-    } else if (selectionChanged) {
-      toast(`Started ${n} file${n > 1 ? 's' : ''}`, 'success');
-    } else {
-      toast('Re-announcing to trackers for selected files', 'info');
-    }
+      const after = torrents[key];
+      const n = selected.length;
+      const stillPaused = after?.status === 0;
+      const hasIncomplete = selected.some(idx => !fileIsComplete(after, idx));
+      if (stillPaused && hasIncomplete) {
+        toast('Could not start — torrent is still paused. Try Resume on the row.', 'error');
+      } else if (stillPaused) {
+        toast('File selection saved', 'info');
+      } else if (selectionChanged) {
+        toast(`Started ${n} file${n > 1 ? 's' : ''}`, 'success');
+      } else {
+        toast('Re-announcing to trackers for selected files', 'info');
+      }
 
-    await poll();
-    if (expandedTorrents.has(key)) refreshTorrentFilesPanel(key);
+      await poll();
+      if (expandedTorrents.has(key)) refreshTorrentFilesPanel(key);
+    });
   } catch (err) {
     toast(err?.message || 'Could not start download', 'error');
     if (btn) btn.disabled = false;
@@ -2775,7 +2776,17 @@ async function updateStorage() {
   }
 }
 
+async function withPollLock(fn) {
+  pollLocked = true;
+  try {
+    return await fn();
+  } finally {
+    pollLocked = false;
+  }
+}
+
 async function poll() {
+  if (pollLocked) return isConnected;
   try {
     const data = await rpc('torrent-get', { fields: FIELDS });
     const list = data?.arguments?.torrents || [];
