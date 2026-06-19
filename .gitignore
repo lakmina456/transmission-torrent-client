@@ -35,3 +35,7 @@ compile_commands.json
 
 # CMake user presets
 CMakeUserPresets.json
+
+# CloudSeed VPS secrets (never commit)
+server/updater.env
+server/deploy.env

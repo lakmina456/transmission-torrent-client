@@ -304,6 +304,11 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           Settings
         </button>
+        <button class="menu-item" id="menu-updates" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Check for updates
+          <span class="menu-item-badge" id="menu-update-badge" hidden>NEW</span>
+        </button>
         <button class="menu-item" id="menu-wishlist" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           Wishlist
@@ -318,6 +323,76 @@
     <div class="menu-footer">
       <span id="app-name-footer">CloudSeed</span>
       <span class="menu-version" id="menu-version"></span>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog update-dialog" id="update-dialog" data-no-backdrop-close>
+  <div class="dialog-panel update-panel">
+    <div class="dialog-header">
+      <div>
+        <h2>Updates</h2>
+        <p class="settings-subtitle">Deploy the latest version from GitHub</p>
+      </div>
+      <button class="dialog-close" data-close="update-dialog" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="update-body">
+      <div class="settings-group">
+        <h3 class="settings-group-title">Application version</h3>
+        <p class="settings-group-desc">Installed build from your private GitHub repository</p>
+
+        <div class="settings-field">
+          <label class="settings-label">Installed version</label>
+          <div class="settings-readonly update-version-line" id="update-installed-version">—</div>
+        </div>
+
+        <div class="settings-field">
+          <label class="settings-label">Last deployed</label>
+          <div class="settings-readonly" id="update-installed-at">—</div>
+        </div>
+
+        <div class="settings-field">
+          <label class="settings-label">Remote status</label>
+          <div class="update-status-row">
+            <span class="update-badge" id="update-status-badge" data-state="unknown">Checking…</span>
+            <span class="update-status-text" id="update-status-text"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group-title">Deploy from GitHub</h3>
+        <p class="settings-group-desc">Pulls the latest code on the VPS and restarts services. Requires your update token (set on the server).</p>
+
+        <div class="settings-field">
+          <label class="settings-label" for="update-token-input">Update token</label>
+          <p class="settings-desc">Not stored in the browser — enter each time you deploy</p>
+          <div class="settings-input-wrap update-token-wrap">
+            <input
+              type="password"
+              id="update-token-input"
+              class="settings-input"
+              placeholder="Paste token from /etc/cloudseed/updater.env"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+        </div>
+
+        <div class="update-actions">
+          <button class="btn-secondary" id="update-check-btn" type="button">Check for updates</button>
+          <button class="btn-primary" id="update-run-btn" type="button" disabled>Update now</button>
+        </div>
+
+        <pre class="update-log" id="update-log" hidden aria-live="polite"></pre>
+      </div>
+    </div>
+
+    <div class="dialog-footer update-footer">
+      <button class="btn-secondary" data-close="update-dialog" type="button">Close</button>
     </div>
   </div>
 </dialog>
@@ -374,6 +449,76 @@
         Copy all links
       </button>
       <button class="btn-secondary" id="modal-cancel-btn" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog update-dialog" id="update-dialog" data-no-backdrop-close>
+  <div class="dialog-panel update-panel">
+    <div class="dialog-header">
+      <div>
+        <h2>Updates</h2>
+        <p class="settings-subtitle">Deploy the latest version from GitHub</p>
+      </div>
+      <button class="dialog-close" data-close="update-dialog" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="update-body">
+      <div class="settings-group">
+        <h3 class="settings-group-title">Application version</h3>
+        <p class="settings-group-desc">Installed build from your private GitHub repository</p>
+
+        <div class="settings-field">
+          <label class="settings-label">Installed version</label>
+          <div class="settings-readonly update-version-line" id="update-installed-version">—</div>
+        </div>
+
+        <div class="settings-field">
+          <label class="settings-label">Last deployed</label>
+          <div class="settings-readonly" id="update-installed-at">—</div>
+        </div>
+
+        <div class="settings-field">
+          <label class="settings-label">Remote status</label>
+          <div class="update-status-row">
+            <span class="update-badge" id="update-status-badge" data-state="unknown">Checking…</span>
+            <span class="update-status-text" id="update-status-text"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group-title">Deploy from GitHub</h3>
+        <p class="settings-group-desc">Pulls the latest code on the VPS and restarts services. Requires your update token (set on the server).</p>
+
+        <div class="settings-field">
+          <label class="settings-label" for="update-token-input">Update token</label>
+          <p class="settings-desc">Not stored in the browser — enter each time you deploy</p>
+          <div class="settings-input-wrap update-token-wrap">
+            <input
+              type="password"
+              id="update-token-input"
+              class="settings-input"
+              placeholder="Paste token from /etc/cloudseed/updater.env"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+        </div>
+
+        <div class="update-actions">
+          <button class="btn-secondary" id="update-check-btn" type="button">Check for updates</button>
+          <button class="btn-primary" id="update-run-btn" type="button" disabled>Update now</button>
+        </div>
+
+        <pre class="update-log" id="update-log" hidden aria-live="polite"></pre>
+      </div>
+    </div>
+
+    <div class="dialog-footer update-footer">
+      <button class="btn-secondary" data-close="update-dialog" type="button">Close</button>
     </div>
   </div>
 </dialog>
@@ -648,7 +793,7 @@
   </div>
 </dialog>
 
-<div id="toast-container" aria-live="polite"></div>
+<div id="toast-container" aria-live="polite" aria-relevant="additions"></div>
 
 <script src="./cloudseed.js"></script>
 </body>

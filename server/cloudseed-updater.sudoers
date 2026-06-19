@@ -1,0 +1,12 @@
+# Install on the VPS:
+#   sudo cp cloudseed-updater.sudoers /etc/sudoers.d/cloudseed-updater
+#   sudo chmod 440 /etc/sudoers.d/cloudseed-updater
+#   sudo visudo -c
+#
+# Allows the updater service (www-data) to run only the deploy script as root.
+
+Defaults:www-data !requiretty
+
+Cmnd_Alias CLOUDSEED_DEPLOY = /opt/cloudseed/deploy.sh, /opt/cloudseed/deploy.sh check
+
+www-data ALL=(root) NOPASSWD: CLOUDSEED_DEPLOY

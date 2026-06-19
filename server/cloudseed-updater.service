@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudSeed updater API
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/cloudseed/updater.py
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+EnvironmentFile=-/etc/cloudseed/updater.env
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

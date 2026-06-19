@@ -174,6 +174,7 @@ window.APP_CONFIG = {
   appName:            'CloudSeed',
   autoPasteMagnet:    true,
   zipWarnThresholdGB: 4,
+  updateApiBase:      '/api',
 };
 ```
 
@@ -297,6 +298,14 @@ server {
         proxy_buffering    off;
         proxy_read_timeout 3600s;   # allow up to 1 hour for huge ZIPs
         add_header         X-Accel-Buffering no;
+    }
+
+    # ── App updates API (Menu → Check for updates) ─────────────────────────
+    location /api/ {
+        proxy_pass         http://127.0.0.1:5002/api/;
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_read_timeout 120s;
     }
 
     # ── Health check (no auth) ────────────────────────────────────────────
@@ -495,6 +504,116 @@ sudo systemctl status certbot.timer
 
 ---
 
+## Step 9 — Git-based updates (Menu → Check for updates)
+
+This enables the **Updates** tab in Settings: check GitHub for new commits and deploy from the UI.
+
+### 9a — GitHub deploy key (read-only)
+
+On the VPS:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/cloudseed_deploy -N ""
+cat ~/.ssh/cloudseed_deploy.pub
+```
+
+In GitHub: **Repo → Settings → Deploy keys → Add deploy key** (read-only, no write access).
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+Host github-cloudseed
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/cloudseed_deploy
+  IdentitiesOnly yes
+EOF
+
+git clone git@github-cloudseed:YOUR_USER/YOUR_REPO.git /opt/cloudseed/src
+```
+
+> Replace `YOUR_USER/YOUR_REPO` with your private repo. Use `main` or change `CLOUDSEED_BRANCH` later.
+
+### 9b — Install deploy + updater scripts
+
+```bash
+sudo mkdir -p /opt/cloudseed /etc/cloudseed
+sudo cp /opt/cloudseed/src/server/deploy.sh /opt/cloudseed/deploy.sh
+sudo cp /opt/cloudseed/src/server/updater.py /opt/cloudseed/updater.py
+sudo chmod +x /opt/cloudseed/deploy.sh /opt/cloudseed/updater.py
+```
+
+### 9c — Secrets (required — do NOT commit these)
+
+Generate an update token:
+
+```bash
+openssl rand -hex 32
+```
+
+Create the updater environment file on the VPS:
+
+```bash
+sudo cp /opt/cloudseed/src/server/updater.env.example /etc/cloudseed/updater.env
+sudo nano /etc/cloudseed/updater.env
+```
+
+Set `UPDATE_TOKEN` to the value from `openssl rand -hex 32`. Save this token somewhere safe (password manager) — you enter it in the UI when clicking **Update now**.
+
+```bash
+sudo chmod 600 /etc/cloudseed/updater.env
+sudo chown root:root /etc/cloudseed/updater.env
+```
+
+Optional path overrides: copy `server/deploy.env.example` → `/etc/cloudseed/deploy.env`.
+
+| File on VPS | Purpose | In git? |
+|---|---|---|
+| `/etc/cloudseed/updater.env` | `UPDATE_TOKEN` and service config | **Never** |
+| `/etc/cloudseed/deploy.env` | Optional repo paths / branch | **Never** |
+| `web/public_html/config.js` on VPS | Production RPC paths, storage — preserved on update | **Never** (on VPS) |
+
+### 9d — Sudoers (www-data may only run deploy.sh)
+
+```bash
+sudo cp /opt/cloudseed/src/server/cloudseed-updater.sudoers /etc/sudoers.d/cloudseed-updater
+sudo chmod 440 /etc/sudoers.d/cloudseed-updater
+sudo visudo -c
+```
+
+### 9e — Updater systemd service
+
+```bash
+sudo cp /opt/cloudseed/src/server/cloudseed-updater.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable cloudseed-updater
+sudo systemctl start cloudseed-updater
+sudo systemctl status cloudseed-updater
+
+curl -s http://127.0.0.1:5002/health
+# Expected: {"status":"ok","service":"cloudseed-updater","updateConfigured":true}
+```
+
+### 9f — First deploy + nginx reload
+
+```bash
+sudo /opt/cloudseed/deploy.sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Using updates from the UI
+
+1. Push changes to GitHub from your dev machine.
+2. Open CloudSeed → **Menu** → **Check for updates**.
+3. Click **Check for updates**.
+4. Enter your `UPDATE_TOKEN` and click **Update now**.
+5. Page reloads when deploy finishes.
+
+**Security layers:** nginx basic auth (whole site) + `X-Update-Token` header (deploy only) + sudoers limited to `/opt/cloudseed/deploy.sh`.
+
+**Local dev:** the Updates tab shows “service unavailable” — expected without the updater on `:5002`.
+
+---
+
 ## File Locations Reference
 
 | What | Path |
@@ -506,6 +625,12 @@ sudo systemctl status certbot.timer
 | nginx auth file | `/etc/nginx/.htpasswd` |
 | ZIP service script | `/opt/cloudseed/zipper.py` |
 | ZIP systemd unit | `/etc/systemd/system/cloudseed-zipper.service` |
+| Git clone (updates) | `/opt/cloudseed/src/` |
+| Deploy script | `/opt/cloudseed/deploy.sh` |
+| Updater API script | `/opt/cloudseed/updater.py` |
+| Updater secrets | `/etc/cloudseed/updater.env` |
+| Updater systemd unit | `/etc/systemd/system/cloudseed-updater.service` |
+| Installed version | `/var/lib/transmission-daemon/info/web/version.json` |
 
 ---
 
@@ -519,6 +644,7 @@ nginx :80  (auth gating)
   ├── /transmission/web/*  →  static files from Transmission web root
   ├── /transmission/rpc    →  proxy → Transmission :9091
   ├── /downloads/*         →  alias → /var/lib/.../downloads/  (direct file serve)
+  ├── /api/*               →  proxy → updater.py :5002  (git deploy API)
   └── /zip?path=X          →  proxy → zipper.py :5001  (streaming ZIP)
                                          │
                                          └── reads from /var/lib/.../downloads/

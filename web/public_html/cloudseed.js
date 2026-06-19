@@ -13,6 +13,7 @@ const APP_NAME    = CFG.appName          || 'CloudSeed';
 const AUTO_PASTE  = CFG.autoPasteMagnet  !== false;
 const ZIP_WARN_GB = CFG.zipWarnThresholdGB || 4;
 const GRAPH_MIN   = (CFG.speedGraphMinutes || 5) * 60 * 1000;
+const UPDATE_API  = (CFG.updateApiBase || '/api').replace(/\/$/, '');
 const GRAPH_HEIGHT_KEY    = 'cloudseed-graph-height';
 const GRAPH_COLLAPSED_KEY = 'cloudseed-graph-collapsed';
 const GRAPH_DEFAULT_H = 120;
@@ -33,6 +34,8 @@ let prevCompleted = new Set();
 let pendingDeleteId = null;
 let wishlist      = [];
 let expandedTorrents = new Set();
+let fileSelections   = new Map();
+let selectedTorrentIds = new Set();
 let pendingPicker = null;
 let speedHistory  = [];
 let graphSize     = { w: 0, h: 0, dpr: 1 };
@@ -444,16 +447,79 @@ function pickerMetaText(t) {
   return `${files.length} file${files.length === 1 ? '' : 's'} · ${fmtBytes(total)} total`;
 }
 
-function countSelectedCompleteFiles(t) {
-  return (t.files || []).reduce((n, _, idx) => {
-    if (!fileIsWanted(t.fileStats, idx)) return n;
-    return fileIsComplete(t, idx) ? n + 1 : n;
-  }, 0);
+function countSelectedCompleteFiles(t, selection) {
+  const sel = selection || getFileSelection(t.id);
+  return [...sel].filter(idx => fileIsComplete(t, idx)).length;
+}
+
+function getFileSelection(torrentId) {
+  const key = +torrentId;
+  if (fileSelections.has(key)) return fileSelections.get(key);
+  const t = torrents[key];
+  const sel = new Set(
+    (t?.files || []).map((_, i) => i).filter(i => fileIsWanted(t?.fileStats, i))
+  );
+  fileSelections.set(key, sel);
+  return sel;
+}
+
+function clearFileSelection(torrentId) {
+  fileSelections.delete(+torrentId);
+}
+
+function setFileSelectionChecked(torrentId, idx, checked) {
+  const sel = new Set(getFileSelection(torrentId));
+  if (checked) sel.add(idx);
+  else sel.delete(idx);
+  fileSelections.set(+torrentId, sel);
+}
+
+function setFileSelectionAll(torrentId, checked) {
+  const t = torrents[torrentId];
+  if (!t?.files) return;
+  fileSelections.set(
+    +torrentId,
+    checked ? new Set(t.files.map((_, i) => i)) : new Set()
+  );
+}
+
+function syncTorrentFileSelectAll(torrentId) {
+  const t = torrents[torrentId];
+  const sa = document.querySelector(`.torrent-file-select-all[data-tid="${torrentId}"]`);
+  if (!sa || !t?.files?.length) return;
+  const total = t.files.length;
+  const n = getFileSelection(torrentId).size;
+  sa.checked = n === total;
+  sa.indeterminate = n > 0 && n < total;
+}
+
+function refreshTorrentFilesPanel(torrentId) {
+  const t = torrents[torrentId];
+  const groupEl = document.querySelector(`[data-group-id="${torrentId}"]`);
+  if (!t || !groupEl) return;
+  const panel = groupEl.querySelector('.torrent-files-panel');
+  if (!panel) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = buildTorrentFilesPanel(t);
+  panel.replaceWith(tmp.firstElementChild);
+  syncTorrentFileSelectAll(torrentId);
 }
 
 function fileIsWanted(fileStats, idx) {
   const w = fileStats?.[idx]?.wanted;
   return w === true || w === 1;
+}
+
+function selectionDiffersFromWanted(t, selection) {
+  const files = t?.files || [];
+  for (let i = 0; i < files.length; i++) {
+    if (fileIsWanted(t.fileStats, i) !== selection.has(i)) return true;
+  }
+  return false;
+}
+
+function normalizeFileIndices(indices) {
+  return [...new Set(indices.map(i => Number(i)).filter(i => Number.isInteger(i) && i >= 0))];
 }
 
 function fileDisplayName(t, file, idx) {
@@ -530,15 +596,16 @@ function getTorrentIdFromAddResponse(r) {
 }
 
 async function applyFileSelection(torrentId, wantedIndices) {
-  const t = torrents[torrentId] || (await rpc('torrent-get', {
+  const wanted = normalizeFileIndices(wantedIndices);
+  const data = await rpc('torrent-get', {
     ids: [+torrentId],
-    fields: ['id','files','fileStats'],
-  }))?.arguments?.torrents?.[0];
-
+    fields: ['id', 'files', 'fileStats', 'status'],
+  });
+  const t = data?.arguments?.torrents?.[0];
   const fileCount = t?.files?.length || 0;
-  if (!fileCount) return;
+  if (!fileCount) throw new Error('Torrent has no files');
 
-  const wantedSet = new Set(wantedIndices);
+  const wantedSet = new Set(wanted);
   const filesWanted = [];
   const filesUnwanted = [];
   for (let i = 0; i < fileCount; i++) {
@@ -546,14 +613,64 @@ async function applyFileSelection(torrentId, wantedIndices) {
     else filesUnwanted.push(i);
   }
 
-  const args = { ids: [+torrentId] };
-  if (filesWanted.length) args['files-wanted'] = filesWanted;
-  if (filesUnwanted.length) args['files-unwanted'] = filesUnwanted;
-  await rpc('torrent-set', args);
+  const ids = { ids: [+torrentId] };
+  const setArgs = { ...ids };
+  if (filesUnwanted.length) setArgs['files-unwanted'] = filesUnwanted;
+  if (filesWanted.length) setArgs['files-wanted'] = filesWanted;
+  if (filesUnwanted.length || filesWanted.length) {
+    await rpc('torrent-set', setArgs);
+  }
+
+  return refreshTorrent(torrentId);
 }
 
 async function startTorrent(id) {
   await rpc('torrent-start', { ids: [+id] });
+}
+
+async function startTorrentNow(id) {
+  await rpc('torrent-start-now', { ids: [+id] });
+}
+
+async function kickTorrentDownload(torrentId, { selectionChanged = false } = {}) {
+  const t = torrents[torrentId];
+  if (!t) return;
+
+  if (t.status === 0) {
+    await startTorrentNow(torrentId);
+    return;
+  }
+
+  if (selectionChanged) {
+    try { await rpc('torrent-reannounce', { ids: [+torrentId] }); } catch {}
+    if ([4, 3, 1].includes(t.status)) {
+      await rpc('torrent-stop', { ids: [+torrentId] });
+      await startTorrentNow(torrentId);
+    }
+    return;
+  }
+
+  try { await rpc('torrent-reannounce', { ids: [+torrentId] }); } catch {}
+}
+
+async function refreshTorrent(id) {
+  const data = await rpc('torrent-get', { ids: [+id], fields: FIELDS });
+  const t = data?.arguments?.torrents?.[0];
+  if (t) torrents[id] = { ...torrents[id], ...t };
+  return t;
+}
+
+function syncFileSelectionFromTorrent(torrentId) {
+  const t = torrents[torrentId];
+  if (!t?.files) return;
+  fileSelections.set(
+    +torrentId,
+    new Set(t.files.map((_, i) => i).filter(i => fileIsWanted(t.fileStats, i)))
+  );
+}
+
+function countPendingDownloadFiles(t, selection) {
+  return [...selection].filter(idx => !fileIsComplete(t, idx)).length;
 }
 
 function renderPickerItems(t, selected) {
@@ -659,8 +776,10 @@ async function confirmTorrentFilePicker() {
       return;
     }
     await applyFileSelection(torrentId, [...selected]);
-    await startTorrent(torrentId);
+    await kickTorrentDownload(torrentId, { selectionChanged: true });
     expandedTorrents.add(+torrentId);
+    await refreshTorrent(torrentId);
+    syncFileSelectionFromTorrent(torrentId);
     toast(isNew ? 'Download started' : 'File selection updated', 'success');
     pendingPicker = null;
     dlg?.close();
@@ -736,29 +855,70 @@ function downloadTorrentFileHttp(t, idx) {
   a.remove();
 }
 
-function downloadSelectedTorrentFiles(torrentId) {
+async function downloadSelectedTorrentFiles(torrentId) {
+  await refreshTorrent(torrentId);
   const t = torrents[torrentId];
   if (!t?.files) return;
-  const indices = t.files
-    .map((_, idx) => idx)
-    .filter(idx => fileIsWanted(t.fileStats, idx) && fileIsComplete(t, idx));
+  const indices = [...getFileSelection(torrentId)].filter(idx => fileIsComplete(t, idx));
   if (!indices.length) {
-    toast('No completed selected files to download', 'info');
+    toast('No completed files in selection — use Start download first', 'info');
     return;
   }
   indices.forEach((idx, i) => {
     setTimeout(() => downloadTorrentFileHttp(t, idx), i * 300);
   });
-  toast(`Downloading ${indices.length} file${indices.length > 1 ? 's' : ''}`, 'success');
+  toast(`Saving ${indices.length} file${indices.length > 1 ? 's' : ''} to device`, 'success');
+}
+
+async function startSelectedTorrentFiles(torrentId) {
+  const key = +torrentId;
+  const selected = normalizeFileIndices(getFileSelection(key));
+  if (!selected.length) {
+    toast('Select at least one file', 'info');
+    return;
+  }
+
+  const btn = document.querySelector(`.torrent-files-start-selected[data-tid="${key}"]`);
+  if (btn) btn.disabled = true;
+
+  try {
+    const before = torrents[key];
+    const selectionChanged = before ? selectionDiffersFromWanted(before, new Set(selected)) : true;
+
+    await applyFileSelection(key, selected);
+    await kickTorrentDownload(key, { selectionChanged });
+    await refreshTorrent(key);
+    syncFileSelectionFromTorrent(key);
+
+    const after = torrents[key];
+    const n = selected.length;
+    if (after?.status === 0) {
+      toast('File selection saved — torrent is paused', 'info');
+    } else if (selectionChanged) {
+      toast(`Started ${n} file${n > 1 ? 's' : ''}`, 'success');
+    } else {
+      toast('Re-announcing to trackers for selected files', 'info');
+    }
+
+    await poll();
+    if (expandedTorrents.has(key)) refreshTorrentFilesPanel(key);
+  } catch (err) {
+    toast(err?.message || 'Could not start download', 'error');
+    if (btn) btn.disabled = false;
+  }
 }
 
 function buildTorrentFilesPanel(t) {
   const files = t.files || [];
   const stats = t.fileStats || [];
-  const completeSelected = countSelectedCompleteFiles(t);
+  const selection = getFileSelection(t.id);
+  const completeSelected = countSelectedCompleteFiles(t, selection);
+  const pendingSelected = countPendingDownloadFiles(t, selection);
+  const allSelected = files.length > 0 && selection.size === files.length;
 
   const items = files.map((file, idx) => {
     const wanted = fileIsWanted(stats, idx);
+    const isSelected = selection.has(idx);
     const complete = fileIsComplete(t, idx);
     const pct = stats[idx]?.bytesCompleted != null && file.length
       ? Math.round((stats[idx].bytesCompleted / file.length) * 100)
@@ -768,18 +928,25 @@ function buildTorrentFilesPanel(t) {
     const cat = fileCategory(ext);
 
     let statusText = '';
-    if (!wanted) statusText = '<span class="torrent-file-status skipped">Skipped</span>';
-    else if (complete) statusText = '<span class="torrent-file-status done">Ready</span>';
-    else if (pct > 0) statusText = `<span class="torrent-file-status">${pct}%</span>`;
-    else statusText = '<span class="torrent-file-status waiting">Queued</span>';
+    if (isSelected && !wanted && !complete) {
+      statusText = '<span class="torrent-file-status pending">Pending</span>';
+    } else if (!wanted) {
+      statusText = '<span class="torrent-file-status skipped">Skipped</span>';
+    } else if (complete) {
+      statusText = '<span class="torrent-file-status done">Ready</span>';
+    } else if (pct > 0) {
+      statusText = `<span class="torrent-file-status">${pct}%</span>`;
+    } else {
+      statusText = '<span class="torrent-file-status waiting">Queued</span>';
+    }
 
     const dlBtn = complete
       ? `<button class="torrent-file-dl-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Download file">${ICON.download}</button>`
       : `<button class="torrent-file-dl-btn" type="button" disabled title="Not ready">${ICON.download}</button>`;
 
-    return `<li class="torrent-file-item${wanted ? '' : ' unwanted'}" data-tid="${t.id}" data-idx="${idx}">
+    return `<li class="torrent-file-item${isSelected ? ' selected' : ''}" data-tid="${t.id}" data-idx="${idx}">
       <label class="torrent-file-check">
-        <input type="checkbox" class="row-checkbox torrent-file-cb" data-tid="${t.id}" data-idx="${idx}" ${wanted ? 'checked' : ''} />
+        <input type="checkbox" class="row-checkbox torrent-file-cb" data-tid="${t.id}" data-idx="${idx}" ${isSelected ? 'checked' : ''} />
         <span class="checkmark"></span>
         ${fileIconHtml(file.name)}
         <span class="torrent-file-name" title="${escHtml(file.name)}">${display}</span>
@@ -790,24 +957,33 @@ function buildTorrentFilesPanel(t) {
     </li>`;
   }).join('');
 
+  const startBtn = pendingSelected > 0
+    ? `<button class="torrent-files-start-selected btn-primary btn-sm" data-tid="${t.id}" type="button">${ICON.play} Start download (${pendingSelected})</button>`
+    : '';
+
   const bulkBtn = completeSelected > 0
-    ? `<button class="torrent-files-dl-selected btn-secondary btn-sm" data-tid="${t.id}" type="button">${ICON.download} Download selected (${completeSelected})</button>`
+    ? `<button class="torrent-files-dl-selected btn-secondary btn-sm" data-tid="${t.id}" type="button">${ICON.download} Save to device (${completeSelected})</button>`
     : '';
 
   return `<div class="torrent-files-panel" data-tid="${t.id}">
     <div class="torrent-files-toolbar">
-      <span class="torrent-files-toolbar-label">${files.length} file${files.length === 1 ? '' : 's'} · check to download, uncheck to skip</span>
+      <span class="torrent-files-toolbar-label">${files.length} file${files.length === 1 ? '' : 's'} · check files, then Start download (Transmission) or Save to device (browser)</span>
       <div class="torrent-files-toolbar-actions">
         <button class="torrent-files-edit btn-secondary btn-sm" data-tid="${t.id}" type="button">Edit files</button>
+        ${startBtn}
         ${bulkBtn}
       </div>
     </div>
-    <div class="torrent-files-head" aria-hidden="true">
-      <span></span>
-      <span>Name</span>
-      <span>Size</span>
-      <span>Status</span>
-      <span></span>
+    <div class="torrent-files-head">
+      <label class="torrent-files-select-all-wrap" title="Select all files">
+        <input type="checkbox" class="row-checkbox torrent-file-select-all" data-tid="${t.id}" ${allSelected ? 'checked' : ''} />
+        <span class="checkmark"></span>
+        <span class="torrent-files-head-spacer" aria-hidden="true"></span>
+        <span class="torrent-files-head-name">Name</span>
+      </label>
+      <span class="torrent-files-head-size">Size</span>
+      <span class="torrent-files-head-status">Status</span>
+      <span class="torrent-files-head-action" aria-hidden="true"></span>
     </div>
     <ul class="torrent-files-list">${items}</ul>
   </div>`;
@@ -844,17 +1020,10 @@ function syncTorrentRowExpand(groupEl, t) {
     const tmp = document.createElement('div');
     tmp.innerHTML = buildTorrentFilesPanel(t);
     groupEl.appendChild(tmp.firstElementChild);
+    syncTorrentFileSelectAll(t.id);
   } else if (!expanded && panel) {
     panel.remove();
   }
-}
-
-async function setSingleFileWanted(torrentId, fileIndex, wanted) {
-  const args = { ids: [+torrentId] };
-  if (wanted) args['files-wanted'] = [fileIndex];
-  else args['files-unwanted'] = [fileIndex];
-  await rpc('torrent-set', args);
-  await poll();
 }
 
 function torrentIsFolder(t) {
@@ -1184,6 +1353,8 @@ async function resumeTorrent(id) { await rpc('torrent-start',  { ids: [+id] }); 
 async function removeTorrent(id, del) {
   await rpc('torrent-remove', { ids: [+id], 'delete-local-data': del });
   delete torrents[id];
+  clearFileSelection(id);
+  selectedTorrentIds.delete(+id);
 }
 
 function isMenuOpen() {
@@ -1371,6 +1542,248 @@ function setSettingsTab(tab) {
   });
 }
 
+function syncMenuUpdateBadge() {
+  const badge = document.getElementById('menu-update-badge');
+  if (badge) badge.hidden = !updateCheckData?.updateAvailable;
+}
+
+// ── App updates (VPS deploy from GitHub) ───────────────────────
+let updatePollTimer = null;
+let updateCheckData = null;
+
+async function updateApiFetch(path, options = {}) {
+  const url = `${UPDATE_API}${path.startsWith('/') ? path : `/${path}`}`;
+  const res = await fetch(url, {
+    credentials: 'same-origin',
+    ...options,
+    headers: {
+      Accept: 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { error: text || res.statusText };
+  }
+  if (!res.ok) {
+    const err = new Error(data?.error || data?.message || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+function setUpdateBadge(state, label) {
+  const badge = document.getElementById('update-status-badge');
+  const text = document.getElementById('update-status-text');
+  if (badge) {
+    badge.dataset.state = state;
+    badge.textContent = label;
+  }
+  return text;
+}
+
+function formatUpdateTime(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
+function renderInstalledVersion(info = {}) {
+  const verEl = document.getElementById('update-installed-version');
+  const atEl = document.getElementById('update-installed-at');
+  if (verEl) {
+    verEl.textContent = info.commit
+      ? `${info.commit} (${info.branch || 'main'})`
+      : (info.message || 'Unknown — deploy from VPS first');
+  }
+  if (atEl) atEl.textContent = formatUpdateTime(info.updatedAt);
+}
+
+function setUpdateLog(message, show = true) {
+  const log = document.getElementById('update-log');
+  if (!log) return;
+  if (!show || !message) {
+    log.hidden = true;
+    log.textContent = '';
+    return;
+  }
+  log.hidden = false;
+  log.textContent = message;
+}
+
+function syncUpdateButtons() {
+  const runBtn = document.getElementById('update-run-btn');
+  const checkBtn = document.getElementById('update-check-btn');
+  const busy = updatePollTimer !== null;
+  if (checkBtn) checkBtn.disabled = busy;
+  if (runBtn) {
+    runBtn.disabled = busy || !updateCheckData?.updateAvailable;
+  }
+}
+
+async function loadInstalledVersion() {
+  try {
+    const info = await updateApiFetch('/version');
+    renderInstalledVersion(info);
+    return info;
+  } catch (err) {
+    renderInstalledVersion({ message: 'Update service unavailable (local dev or not configured)' });
+    throw err;
+  }
+}
+
+async function checkForUpdates({ quiet = false, menuOnly = false } = {}) {
+  let statusText;
+  if (!menuOnly) {
+    statusText = setUpdateBadge('working', 'Checking');
+    if (statusText) statusText.textContent = 'Contacting server…';
+    setUpdateLog('');
+  }
+  syncUpdateButtons();
+
+  try {
+    const data = await updateApiFetch('/update/check');
+    updateCheckData = data;
+    if (!menuOnly && data.installed) renderInstalledVersion(data.installed);
+
+    if (!menuOnly) {
+      if (data.updateAvailable) {
+        setUpdateBadge('available', 'Update available');
+        if (statusText) {
+          const behind = data.behind > 1 ? `${data.behind} commits behind` : '1 commit behind';
+          statusText.textContent = `GitHub has newer code (${behind}) · ${data.remote?.slice(0, 7) || 'remote'}`;
+        }
+      } else {
+        setUpdateBadge('current', 'Up to date');
+        if (statusText) statusText.textContent = 'Installed version matches GitHub';
+      }
+    }
+  } catch (err) {
+    updateCheckData = null;
+    if (!menuOnly) {
+      setUpdateBadge('unavailable', 'Unavailable');
+      if (statusText) {
+        statusText.textContent = err.status === 404
+          ? 'Updater API not found — configure nginx /api/ on the VPS'
+          : (err.message || 'Could not check for updates');
+      }
+      if (!quiet) toast('Could not check for updates', 'error');
+    }
+  } finally {
+    syncUpdateButtons();
+    syncMenuUpdateBadge();
+  }
+}
+
+function stopUpdatePoll() {
+  if (updatePollTimer) {
+    clearInterval(updatePollTimer);
+    updatePollTimer = null;
+  }
+  syncUpdateButtons();
+}
+
+async function pollUpdateStatus() {
+  try {
+    const status = await updateApiFetch('/update/status');
+    if (status.running) {
+      setUpdateBadge('working', 'Updating');
+      const statusText = document.getElementById('update-status-text');
+      if (statusText) statusText.textContent = 'Deploy in progress on the VPS…';
+      if (status.log) setUpdateLog(status.log);
+      return;
+    }
+
+    stopUpdatePoll();
+    setUpdateLog(status.log || status.error || '', !!(status.log || status.error));
+
+    if (status.exitCode === 0) {
+      toast('Update completed — reloading', 'success');
+      setTimeout(() => location.reload(), 1200);
+      return;
+    }
+
+    setUpdateBadge('unavailable', 'Failed');
+    const statusText = document.getElementById('update-status-text');
+    if (statusText) statusText.textContent = status.error || 'Deploy failed — see log below';
+    toast('Update failed', 'error');
+    await checkForUpdates({ quiet: true });
+  } catch (err) {
+    stopUpdatePoll();
+    toast(err.message || 'Lost connection to updater', 'error');
+  }
+}
+
+async function runAppUpdate() {
+  const tokenInput = document.getElementById('update-token-input');
+  const token = tokenInput?.value?.trim() || '';
+  if (!token) {
+    toast('Enter the update token from the VPS', 'error');
+    tokenInput?.focus();
+    return;
+  }
+
+  const runBtn = document.getElementById('update-run-btn');
+  if (runBtn) runBtn.disabled = true;
+  setUpdateLog('');
+  setUpdateBadge('working', 'Updating');
+  const statusText = document.getElementById('update-status-text');
+  if (statusText) statusText.textContent = 'Starting deploy…';
+
+  try {
+    await updateApiFetch('/update', {
+      method: 'POST',
+      headers: { 'X-Update-Token': token },
+    });
+    if (tokenInput) tokenInput.value = '';
+    updatePollTimer = setInterval(pollUpdateStatus, 2000);
+    await pollUpdateStatus();
+  } catch (err) {
+    setUpdateBadge('unavailable', 'Failed');
+    if (statusText) statusText.textContent = err.message || 'Could not start update';
+    toast(err.status === 403 ? 'Invalid update token' : 'Could not start update', 'error');
+    syncUpdateButtons();
+  }
+}
+
+async function refreshUpdatesTab() {
+  stopUpdatePoll();
+  updateCheckData = null;
+  syncMenuUpdateBadge();
+  syncUpdateButtons();
+  try {
+    await loadInstalledVersion();
+  } catch {
+    setUpdateBadge('unavailable', 'Unavailable');
+    syncUpdateButtons();
+    return;
+  }
+  await checkForUpdates({ quiet: true });
+}
+
+async function openUpdates() {
+  closeDialog('menu-dialog');
+  document.getElementById('update-dialog')?.showModal();
+  await refreshUpdatesTab();
+}
+
+function setupUpdates() {
+  document.getElementById('update-check-btn')?.addEventListener('click', () => {
+    checkForUpdates();
+  });
+  document.getElementById('update-run-btn')?.addEventListener('click', () => {
+    runAppUpdate();
+  });
+}
+
 function syncSettingsFieldStates() {
   const dlEnabled = document.getElementById('setting-dl-enabled');
   const ulEnabled = document.getElementById('setting-ul-enabled');
@@ -1489,6 +1902,7 @@ async function openMenu() {
   updateMenuStats();
   await refreshMenuSession();
   dlg.showModal();
+  void checkForUpdates({ quiet: true, menuOnly: true });
 }
 
 // ── Filter & sort ─────────────────────────────────────────────
@@ -1543,6 +1957,29 @@ function sortTorrents(list) {
 }
 
 // ── Row builder ───────────────────────────────────────────────
+function isTorrentRowSelected(id) {
+  return selectedTorrentIds.has(+id);
+}
+
+function setTorrentRowSelected(id, selected) {
+  const key = +id;
+  if (selected) selectedTorrentIds.add(key);
+  else selectedTorrentIds.delete(key);
+  const group = document.querySelector(`[data-group-id="${key}"]`);
+  group?.classList.toggle('selected', selected);
+  group?.querySelector('.file-row')?.classList.toggle('selected', selected);
+  syncMainSelectAll();
+}
+
+function syncMainSelectAll() {
+  const selectAll = document.getElementById('select-all');
+  if (!selectAll) return;
+  const boxes = [...document.querySelectorAll('.row-select')];
+  const n = boxes.filter(cb => cb.checked).length;
+  selectAll.checked = boxes.length > 0 && n === boxes.length;
+  selectAll.indeterminate = n > 0 && n < boxes.length;
+}
+
 function buildRow(t, hasFiles, expanded) {
   const si    = getStatus(t);
   const pct   = Math.round((t.percentDone || 0) * 100);
@@ -1587,9 +2024,11 @@ function buildRow(t, hasFiles, expanded) {
     ? ` · <span class="file-count-hint">${t.files.length} file${t.files.length === 1 ? '' : 's'}</span>`
     : '';
 
-  return `<div class="file-row${showProgress ? ' has-progress' : ''}${hasFiles ? '' : ' no-expand'}" data-id="${t.id}" data-status="${si.cls}" role="listitem">
+  const rowSelected = isTorrentRowSelected(t.id);
+
+  return `<div class="file-row${showProgress ? ' has-progress' : ''}${hasFiles ? '' : ' no-expand'}${rowSelected ? ' selected' : ''}" data-id="${t.id}" data-status="${si.cls}" role="listitem">
     <label class="row-check">
-      <input type="checkbox" class="row-checkbox row-select" data-id="${t.id}" />
+      <input type="checkbox" class="row-checkbox row-select" data-id="${t.id}" ${rowSelected ? 'checked' : ''} />
       <span class="checkmark"></span>
     </label>
     ${expandSlot}
@@ -1614,7 +2053,8 @@ function buildRow(t, hasFiles, expanded) {
 function buildRowGroup(t) {
   const hasFiles = torrentHasFileList(t);
   const expanded = expandedTorrents.has(t.id);
-  return `<div class="file-row-group${expanded ? ' expanded' : ''}" data-group-id="${t.id}">
+  const rowSelected = isTorrentRowSelected(t.id);
+  return `<div class="file-row-group${expanded ? ' expanded' : ''}${rowSelected ? ' selected' : ''}" data-group-id="${t.id}">
     ${buildRow(t, hasFiles, expanded)}
     ${hasFiles && expanded ? buildTorrentFilesPanel(t) : ''}
   </div>`;
@@ -1685,6 +2125,8 @@ function renderList(list) {
       container.appendChild(tmp.firstElementChild);
     }
   });
+
+  syncMainSelectAll();
 }
 
 function updateSidebar(list) {
@@ -1904,16 +2346,45 @@ async function copyText(text) {
 function toast(msg, type = 'success') {
   const c = document.getElementById('toast-container');
   if (!c) return;
-  const icon = type === 'success' ? '✓' : type === 'error' ? '✕' : 'i';
+
+  const icons = {
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
+    error:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+    info:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  };
+
+  const dismissMs = type === 'error' ? 5500 : 4200;
+
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
-  el.innerHTML = `<span class="toast-icon" aria-hidden="true">${icon}</span><span class="toast-message">${escHtml(msg)}</span>`;
-  c.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('visible'));
-  setTimeout(() => {
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  el.innerHTML = `
+    <span class="toast-icon" aria-hidden="true">${icons[type] || icons.info}</span>
+    <span class="toast-message">${escHtml(msg)}</span>
+    <button class="toast-close" type="button" aria-label="Dismiss notification">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <span class="toast-progress" style="animation-duration:${dismissMs}ms"></span>`;
+
+  c.prepend(el);
+
+  while (c.children.length > 5) {
+    c.lastElementChild?.remove();
+  }
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
     el.classList.remove('visible');
-    setTimeout(() => el.remove(), 320);
-  }, 3800);
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 280);
+  };
+
+  el.querySelector('.toast-close')?.addEventListener('click', close);
+  requestAnimationFrame(() => el.classList.add('visible'));
+  const timer = setTimeout(close, dismissMs);
 }
 
 // ── Dialog helpers ────────────────────────────────────────────
@@ -1960,7 +2431,13 @@ function setupGrid() {
 
     const bulkDl = e.target.closest('.torrent-files-dl-selected');
     if (bulkDl) {
-      downloadSelectedTorrentFiles(+bulkDl.dataset.tid);
+      await downloadSelectedTorrentFiles(+bulkDl.dataset.tid);
+      return;
+    }
+
+    const startSel = e.target.closest('.torrent-files-start-selected');
+    if (startSel) {
+      await startSelectedTorrentFiles(+startSel.dataset.tid);
       return;
     }
 
@@ -1985,21 +2462,20 @@ function setupGrid() {
     else if (btn.classList.contains('btn-dl-http')) { openDownloadModal(id); }
   });
 
-  document.getElementById('file-list')?.addEventListener('change', async e => {
+  document.getElementById('file-list')?.addEventListener('change', e => {
+    const selectAll = e.target.closest('.torrent-file-select-all');
+    if (selectAll) {
+      e.stopPropagation();
+      setFileSelectionAll(selectAll.dataset.tid, selectAll.checked);
+      refreshTorrentFilesPanel(selectAll.dataset.tid);
+      return;
+    }
+
     const cb = e.target.closest('.torrent-file-cb');
     if (!cb) return;
     e.stopPropagation();
-    const tid = cb.dataset.tid;
-    const idx = +cb.dataset.idx;
-    cb.disabled = true;
-    try {
-      await setSingleFileWanted(tid, idx, cb.checked);
-    } catch {
-      cb.checked = !cb.checked;
-      toast('Could not update file selection', 'error');
-    } finally {
-      cb.disabled = false;
-    }
+    setFileSelectionChecked(cb.dataset.tid, +cb.dataset.idx, cb.checked);
+    refreshTorrentFilesPanel(cb.dataset.tid);
   });
 }
 
@@ -2101,13 +2577,13 @@ function setupSelectAll() {
   selectAll?.addEventListener('change', () => {
     document.querySelectorAll('.row-select').forEach(cb => {
       cb.checked = selectAll.checked;
-      cb.closest('.file-row')?.classList.toggle('selected', selectAll.checked);
+      setTorrentRowSelected(cb.dataset.id, selectAll.checked);
     });
   });
 
   document.getElementById('file-list')?.addEventListener('change', e => {
     if (!e.target.classList.contains('row-select')) return;
-    e.target.closest('.file-row')?.classList.toggle('selected', e.target.checked);
+    setTorrentRowSelected(e.target.dataset.id, e.target.checked);
   });
 }
 
@@ -2225,6 +2701,10 @@ function setupMenu() {
     closeDialog('menu-dialog');
     await openSettings();
   });
+
+  document.getElementById('menu-updates')?.addEventListener('click', () => {
+    void openUpdates();
+  });
 }
 
 function setupModals() {
@@ -2327,6 +2807,7 @@ function init() {
   setupWishlist();
   setupMenu();
   setupSettings();
+  setupUpdates();
   setupSpeedGraph();
   setupModals();
   setupRetry();
