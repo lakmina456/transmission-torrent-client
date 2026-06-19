@@ -1567,7 +1567,7 @@ body.graph-resizing {
 
 .torrent-files-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px 64px 72px;
+  grid-template-columns: minmax(0, 1fr) 72px 64px 96px;
   align-items: center;
   gap: 10px;
   padding: 0 10px 6px;
@@ -1582,9 +1582,10 @@ body.graph-resizing {
   background: var(--bg-row-active);
 }
 
+.torrent-files-head,
 .torrent-file-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px 64px 72px;
+  grid-template-columns: minmax(0, 1fr) 72px 64px 96px;
   align-items: center;
   gap: 10px;
 }
@@ -1702,15 +1703,26 @@ body.graph-resizing {
 .torrent-file-status.downloading { color: var(--accent); font-weight: 600; }
 .torrent-file-status.waiting { color: var(--text-muted); font-weight: 500; }
 
+.torrent-file-item.local-downloading {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.torrent-file-item.tx-downloading:not(.local-downloading) {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
 .torrent-file-actions {
   grid-column: 4;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
+  min-width: 0;
 }
 
-.torrent-file-dl-btn,
+.torrent-file-local-dl-btn,
+.torrent-file-cancel-local-btn,
+.torrent-file-cancel-tx-btn,
 .torrent-file-delete-btn {
   width: 30px;
   height: 30px;
@@ -1723,15 +1735,36 @@ body.graph-resizing {
   flex-shrink: 0;
 }
 
-.torrent-file-dl-btn svg,
+.torrent-file-local-dl-btn svg,
+.torrent-file-cancel-local-btn svg,
+.torrent-file-cancel-tx-btn svg,
 .torrent-file-delete-btn svg { width: 15px; height: 15px; }
 
-.torrent-file-dl-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
-.torrent-file-dl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.torrent-file-local-dl-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+.torrent-file-local-dl-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.torrent-file-cancel-local-btn {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.torrent-file-cancel-local-btn:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.torrent-file-cancel-tx-btn:hover {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
 
 .torrent-file-delete-btn:hover {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.torrent-file-item.local-downloading .torrent-file-cancel-local-btn svg {
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 /* Progress */

@@ -44,6 +44,7 @@ let wishlist      = [];
 let expandedTorrents = new Set();
 let fileSelections   = new Map();
 let localFileReadyCache = new Map();
+let localFileDownloads = new Map();
 let selectedTorrentIds = new Set();
 let pendingPicker = null;
 let speedHistory  = [];
@@ -92,6 +93,7 @@ const ICON = {
   play:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
   trash:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>`,
   download:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+  close:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   copy:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
   chevron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`,
 };
@@ -508,7 +510,65 @@ async function probeTorrentFilesLocal(torrentId) {
   }
 }
 
+function fileDownloadKey(tid, idx) {
+  return `${tid}:${idx}`;
+}
+
+function isLocalFileDownloading(tid, idx) {
+  return localFileDownloads.has(fileDownloadKey(tid, idx));
+}
+
+function isFileTransmissionActive(t, idx) {
+  if (!fileIsWanted(t.fileStats, idx) || fileIsComplete(t, idx)) return false;
+  return [1, 2, 3, 4, 5].includes(t.status);
+}
+
+function updateTorrentFileRowActions(tid, idx) {
+  const t = torrents[tid];
+  if (!t) return;
+  const item = document.querySelector(`.torrent-file-item[data-tid="${tid}"][data-idx="${idx}"]`);
+  if (!item) return;
+
+  const actions = item.querySelector('.torrent-file-actions');
+  if (actions) actions.innerHTML = buildTorrentFileActionButtons(t, idx);
+
+  item.classList.toggle('local-downloading', isLocalFileDownloading(tid, idx));
+  item.classList.toggle('tx-downloading', isFileTransmissionActive(t, idx));
+
+  const statusEl = item.querySelector('.torrent-file-status');
+  if (statusEl && isLocalFileDownloading(tid, idx)) {
+    statusEl.outerHTML = '<span class="torrent-file-status downloading">Saving…</span>';
+  }
+}
+
+function buildTorrentFileActionButtons(t, idx) {
+  const key = fileDownloadKey(t.id, idx);
+  const ready = fileIsReady(t, idx);
+  const localActive = localFileDownloads.has(key);
+  const txActive = isFileTransmissionActive(t, idx);
+  let html = '';
+
+  if (localActive) {
+    html += `<button class="torrent-file-cancel-local-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Cancel save to device" aria-label="Cancel download">${ICON.close}</button>`;
+  } else {
+    html += ready
+      ? `<button class="torrent-file-local-dl-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Save to device" aria-label="Download file">${ICON.download}</button>`
+      : `<button class="torrent-file-local-dl-btn" type="button" disabled title="Not ready on server">${ICON.download}</button>`;
+  }
+
+  if (txActive && !localActive) {
+    html += `<button class="torrent-file-cancel-tx-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Stop downloading this file" aria-label="Stop download">${ICON.pause}</button>`;
+  }
+
+  html += `<button class="torrent-file-delete-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Remove from download" aria-label="Remove file">${ICON.trash}</button>`;
+  return html;
+}
+
 function getTorrentFileStatusHtml(t, idx, selection) {
+  if (isLocalFileDownloading(t.id, idx)) {
+    return '<span class="torrent-file-status downloading">Saving…</span>';
+  }
+
   const wanted = fileIsWanted(t.fileStats, idx);
   const isSelected = selection.has(idx);
   const ready = fileIsReady(t, idx);
@@ -518,6 +578,11 @@ function getTorrentFileStatusHtml(t, idx, selection) {
 
   if (ready) {
     return '<span class="torrent-file-status done">Ready</span>';
+  }
+  if (isFileTransmissionActive(t, idx)) {
+    return pct > 0
+      ? `<span class="torrent-file-status downloading">${pct}%</span>`
+      : '<span class="torrent-file-status downloading">Downloading</span>';
   }
   if (isSelected && !wanted) {
     return '<span class="torrent-file-status pending">Pending</span>';
@@ -1202,20 +1267,81 @@ async function addTorrentWithPicker(args, label) {
   }
 }
 
-function downloadTorrentFileHttp(t, idx) {
-  const file = t.files?.[idx];
-  if (!file || !fileIsReady(t, idx)) {
-    toast('File is not ready to download', 'info');
-    return;
-  }
-  const { url, filename } = buildDownloadTarget(t, file);
+function saveBlobToDevice(blob, filename) {
+  const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
+  a.href = blobUrl;
   a.download = filename;
   a.rel = 'noopener';
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
+async function downloadTorrentFileHttp(t, idx) {
+  const file = t.files?.[idx];
+  if (!file || !fileIsReady(t, idx)) {
+    toast('File is not ready to download', 'info');
+    return;
+  }
+
+  const key = fileDownloadKey(t.id, idx);
+  if (localFileDownloads.has(key)) return;
+
+  const { url, filename, isZip } = buildDownloadTarget(t, file);
+  if (isZip) {
+    saveBlobToDevice(await (await fetch(url)).blob(), filename);
+    toast(`Saving ${filename}`, 'success');
+    return;
+  }
+
+  const abort = new AbortController();
+  localFileDownloads.set(key, { abort });
+  updateTorrentFileRowActions(t.id, idx);
+
+  try {
+    const r = await fetch(url, { signal: abort.signal, cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+    const blob = await r.blob();
+    saveBlobToDevice(blob, filename);
+    toast(`Saved ${filename}`, 'success');
+  } catch (e) {
+    if (e?.name !== 'AbortError') {
+      toast(e?.message || 'Download failed', 'error');
+    }
+  } finally {
+    localFileDownloads.delete(key);
+    updateTorrentFileRowActions(t.id, idx);
+  }
+}
+
+function cancelLocalFileDownload(tid, idx) {
+  const key = fileDownloadKey(tid, idx);
+  const job = localFileDownloads.get(key);
+  if (!job) return;
+  job.abort.abort();
+  localFileDownloads.delete(key);
+  updateTorrentFileRowActions(tid, idx);
+  toast('Download cancelled', 'info');
+}
+
+async function cancelTorrentFileDownload(tid, idx) {
+  const t = torrents[tid];
+  if (!t?.files) return;
+
+  const wanted = t.files
+    .map((_, i) => i)
+    .filter(i => fileIsWanted(t.fileStats, i) && i !== idx);
+
+  const sel = getFileSelection(tid);
+  sel.delete(idx);
+
+  await applyFileSelection(tid, wanted);
+  refreshTorrentFilesPanel(tid);
+  toast('Stopped downloading file', 'info');
+  await poll();
 }
 
 async function downloadSelectedTorrentFiles(torrentId) {
@@ -1227,8 +1353,8 @@ async function downloadSelectedTorrentFiles(torrentId) {
     toast('No completed files in selection — use Start download first', 'info');
     return;
   }
-  indices.forEach((idx, i) => {
-    setTimeout(() => downloadTorrentFileHttp(t, idx), i * 300);
+  indices.forEach((fileIdx, i) => {
+    setTimeout(() => { void downloadTorrentFileHttp(t, fileIdx); }, i * 400);
   });
   toast(`Saving ${indices.length} file${indices.length > 1 ? 's' : ''} to device`, 'success');
 }
@@ -1288,14 +1414,11 @@ function buildTorrentFilesPanel(t) {
     const ready = fileIsReady(t, idx);
     const display = escHtml(fileDisplayName(t, file, idx));
     const statusText = getTorrentFileStatusHtml(t, idx, selection);
+    const actionButtons = buildTorrentFileActionButtons(t, idx);
+    const localActive = isLocalFileDownloading(t.id, idx);
+    const txActive = isFileTransmissionActive(t, idx);
 
-    const dlBtn = ready
-      ? `<button class="torrent-file-dl-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Save to device">${ICON.download}</button>`
-      : `<button class="torrent-file-dl-btn" type="button" disabled title="Not ready">${ICON.download}</button>`;
-
-    const deleteBtn = `<button class="torrent-file-delete-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Remove from download" aria-label="Remove file">${ICON.trash}</button>`;
-
-    return `<li class="torrent-file-item${isSelected ? ' selected' : ''}${ready ? ' ready' : ''}" data-tid="${t.id}" data-idx="${idx}">
+    return `<li class="torrent-file-item${isSelected ? ' selected' : ''}${ready ? ' ready' : ''}${localActive ? ' local-downloading' : ''}${txActive ? ' tx-downloading' : ''}" data-tid="${t.id}" data-idx="${idx}">
       <label class="torrent-file-check">
         <input type="checkbox" class="row-checkbox torrent-file-cb" data-tid="${t.id}" data-idx="${idx}" ${isSelected ? 'checked' : ''} />
         <span class="checkmark"></span>
@@ -1305,8 +1428,7 @@ function buildTorrentFilesPanel(t) {
       <span class="torrent-file-size">${fmtBytes(file.length)}</span>
       ${statusText}
       <div class="torrent-file-actions">
-        ${dlBtn}
-        ${deleteBtn}
+        ${actionButtons}
       </div>
     </li>`;
   }).join('');
@@ -2702,7 +2824,7 @@ async function poll() {
 
 function maybeNotify(name) {
   if (Notification?.permission === 'granted') {
-    new Notification(`${APP_NAME} — Download complete`, { body: name, icon: './images/favicon.svg' });
+    new Notification(`${APP_NAME} — Download complete`, { body: name, icon: './images/favicon.svg?v=2' });
   }
 }
 
@@ -2927,10 +3049,25 @@ function setupGrid() {
       }
     }
 
-    const fileDl = e.target.closest('.torrent-file-dl-btn');
+    const fileDl = e.target.closest('.torrent-file-local-dl-btn');
     if (fileDl && !fileDl.disabled) {
+      e.stopPropagation();
       const t = torrents[fileDl.dataset.tid];
-      if (t) downloadTorrentFileHttp(t, +fileDl.dataset.idx);
+      if (t) void downloadTorrentFileHttp(t, +fileDl.dataset.idx);
+      return;
+    }
+
+    const cancelLocal = e.target.closest('.torrent-file-cancel-local-btn');
+    if (cancelLocal) {
+      e.stopPropagation();
+      cancelLocalFileDownload(+cancelLocal.dataset.tid, +cancelLocal.dataset.idx);
+      return;
+    }
+
+    const cancelTx = e.target.closest('.torrent-file-cancel-tx-btn');
+    if (cancelTx) {
+      e.stopPropagation();
+      await cancelTorrentFileDownload(+cancelTx.dataset.tid, +cancelTx.dataset.idx);
       return;
     }
 
