@@ -1,117 +1,648 @@
 <!doctype html>
-<html lang="en" xml:lang="en">
-  <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <meta http-equiv="X-UA-Compatible" content="IE=8,IE=9,IE=10" />
-    <!-- ticket #4555 -->
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"
-    />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <link href="./transmission-app.css" rel="stylesheet" />
-    <link href="./images/favicon.ico" rel="icon" sizes="16x16 32x32" />
-    <link href="./images/favicon.svg" rel="icon" type="image/svg+xml" />
-    <link href="./images/apple-touch-icon.png" rel="apple-touch-icon" />
-    <script type="text/javascript" src="./transmission-app.js"></script>
-    <title>Transmission Web Interface</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <div id="mainwin">
-      <header class="mainwin-toolbar" id="mainwin-toolbar">
-        <button
-          aria-keyshortcuts="Alt+O"
-          aria-label="Open torrent"
-          class="toolbar-button"
-          data-action="open-torrent"
-          id="toolbar-open"
-          tabindex="0"
-        >
-          Open
-        </button>
-        <button
-          aria-keyshortcuts="Alt+Delete"
-          aria-label="Remove selected torrents"
-          class="toolbar-button"
-          data-action="remove-selected-torrents"
-          id="toolbar-delete"
-          tabindex="0"
-        >
-          Delete
-        </button>
-        <div class="toolbar-separator"></div>
-        <button
-          aria-keyshortcuts="Alt+R"
-          aria-label="Resume selected torrents"
-          class="toolbar-button"
-          data-action="resume-selected-torrents"
-          id="toolbar-start"
-          tabindex="0"
-        >
-          Start
-        </button>
-        <button
-          aria-keyshortcuts="Alt+P"
-          aria-label="Pause selected torrents"
-          class="toolbar-button"
-          data-action="pause-selected-torrents"
-          id="toolbar-pause"
-          tabindex="0"
-        >
-          Stop
-        </button>
-        <div class="toolbar-separator"></div>
-        <button
-          aria-keyshortcuts="Alt+I"
-          aria-label="Toggle inspector"
-          class="toolbar-button"
-          data-action="show-inspector"
-          id="toolbar-inspector"
-          tabindex="0"
-        >
-          Inspector
-        </button>
-        <span class="flexible-space"></span>
-        <button
-          aria-keyshortcuts="Alt+M"
-          aria-label="Show sidebar menu"
-          class="toolbar-button"
-          data-action="show-overflow-menu"
-          id="toolbar-overflow"
-          tabindex="0"
-        ></button>
-      </header>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f4f4f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)" />
+  <meta name="color-scheme" content="light dark" />
+  <title>CloudSeed</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./cloudseed.css" />
+  <link href="./images/favicon.ico" rel="icon" sizes="16x16 32x32" />
+  <link href="./images/favicon.svg" rel="icon" type="image/svg+xml" />
+  <link href="./images/apple-touch-icon.png" rel="apple-touch-icon" />
+  <script src="./config.js"></script>
+</head>
+<body>
 
-      <header id="mainwin-statusbar">
-        <span>Show</span>
-        <select id="filter-mode"></select>
-        <select id="filter-tracker"></select>
-        <div style="display: flex; position: relative">
-          <input type="search" id="torrent-search" placeholder="Filter" />
-          <input type="reset" id="reset" value="&times;" />
-        </div>
-        <span id="filter-count">&nbsp;</span>
-        <span class="flexible-space"></span>
-        <div class="speed-container">
-          <div id="speed-down"></div>
-        </div>
-        <div class="speed-container">
-          <span class="flexible-space"></span>
-          <div id="speed-up"></div>
-        </div>
-        <button id="turtle"></button>
-      </header>
+<div class="app" id="app">
+  <div class="content-shell">
 
-      <main id="mainwin-workarea">
-        <div id="torrent-container">
-          <ul id="torrent-list"></ul>
-        </div>
-      </main>
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-lockup" title="CloudSeed">
+        <img src="./images/favicon.svg" alt="" class="brand-icon" width="28" height="28" />
+        <span class="brand-name" id="brand-name">CloudSeed</span>
+      </div>
+      <span class="conn-indicator" id="connection-dot" title="Connecting…">
+        <span class="conn-dot"></span>
+      </span>
+    </div>
 
-      <div class="upload-div">
-        <h2>Drag your torrent files here to add them to Transmission.</h2>
+    <div class="header-add">
+      <div class="add-field" id="paste-zone">
+        <svg class="add-field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        <input
+          id="magnet-input"
+          type="text"
+          class="add-input"
+          placeholder="Paste magnet link or URL"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <kbd class="add-kbd" aria-hidden="true">↵</kbd>
+        <button class="add-submit" id="btn-add-torrent" type="button" title="Add torrent" aria-label="Add torrent">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="drag-overlay" id="drag-overlay">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/></svg>
+          <span>Drop .torrent files</span>
+        </div>
       </div>
     </div>
-  </body>
+
+    <div class="header-actions">
+      <button class="account-chip" id="btn-profile" type="button" aria-label="Storage">
+        <div class="account-avatar" id="user-avatar">CS</div>
+        <div class="account-details">
+          <span class="account-label" id="profile-tier">Storage</span>
+          <div class="storage-row">
+            <span class="storage-used" id="storage-used">—</span>
+            <span class="storage-of">of</span>
+            <span class="storage-total" id="storage-total">—</span>
+          </div>
+          <div class="storage-track" aria-hidden="true">
+            <div class="storage-fill" id="storage-fill" style="width:0%"></div>
+          </div>
+        </div>
+      </button>
+
+      <div class="action-divider" aria-hidden="true"></div>
+
+      <div class="wishlist-dropdown-wrap" id="wishlist-wrap">
+        <button class="tool-btn" id="btn-wishlist" type="button" title="Wishlist" aria-label="Open wishlist" aria-expanded="false" aria-haspopup="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span class="tool-badge" id="wishlist-badge" hidden>0</span>
+        </button>
+
+        <div class="wishlist-dropdown" id="wishlist-dropdown" hidden>
+          <div class="wishlist-dropdown-header">
+            <div class="wishlist-dropdown-title">
+              <span>Wishlist</span>
+              <span class="wishlist-count" id="wishlist-count"></span>
+            </div>
+            <button class="wishlist-dropdown-close" id="wishlist-close" type="button" aria-label="Close wishlist">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="wishlist-empty" id="wishlist-empty" hidden>
+            <p>Nothing saved yet</p>
+            <span>Paste a link, then bookmark it for later</span>
+          </div>
+
+          <ul class="wishlist-items" id="wishlist-items"></ul>
+
+          <div class="wishlist-dropdown-footer" id="wishlist-footer" hidden>
+            <button class="btn-secondary btn-sm" id="btn-wishlist-add-all" type="button">Add all to queue</button>
+          </div>
+        </div>
+      </div>
+
+      <label class="tool-btn" for="torrent-file-input" title="Upload .torrent">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 7 12 3 8 7"/><line x1="12" y1="3" x2="12" y2="15"/><path d="M20 21H4a2 2 0 0 1-2-2v-3"/></svg>
+      </label>
+      <input type="file" id="torrent-file-input" accept=".torrent" hidden multiple />
+
+      <button class="tool-btn" id="btn-wishlist-add" type="button" title="Save to wishlist">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      </button>
+
+      <button class="tool-btn theme-toggle" id="btn-theme" type="button" title="Toggle theme" aria-label="Toggle light/dark mode">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <button class="tool-btn" id="btn-menu" type="button" title="Menu" aria-label="Open menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="file-manager">
+    <div class="list-toolbar">
+      <label class="select-all-wrap" title="Select all">
+        <input type="checkbox" id="select-all" class="row-checkbox" />
+        <span class="checkmark"></span>
+      </label>
+      <span class="toolbar-heading">Downloads</span>
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="file-search" class="search-input" placeholder="Filter files…" autocomplete="off" />
+      </div>
+      <div class="sort-headers">
+        <button class="sort-btn" data-sort="size" type="button">Size</button>
+        <button class="sort-btn active desc" data-sort="date" type="button">
+          Modified
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="status-banner connecting" id="status-banner" hidden>
+      <div class="spinner sm"></div>
+      <span id="status-banner-text">Connecting…</span>
+    </div>
+
+    <div class="empty-state" id="empty-state" hidden>
+      <div class="empty-illustration" aria-hidden="true">
+        <div class="empty-glow"></div>
+        <svg viewBox="0 0 80 80" fill="none"><rect x="12" y="20" width="56" height="44" rx="6" stroke="currentColor" stroke-width="1.5"/><path d="M12 32h56" stroke="currentColor" stroke-width="1.5"/><path d="M32 48l8 8 16-16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".4"/></svg>
+      </div>
+      <p class="empty-title">No downloads yet</p>
+      <p class="empty-hint">Paste a magnet link above or drop a .torrent file to get started.</p>
+      <div class="empty-actions" aria-hidden="true">
+        <span class="empty-chip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          Paste link
+        </span>
+        <span class="empty-chip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 7 12 3 8 7"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Upload .torrent
+        </span>
+      </div>
+    </div>
+
+    <div class="empty-state offline-state" id="offline-state" hidden>
+      <div class="empty-illustration offline" aria-hidden="true">
+        <div class="empty-glow offline-glow"></div>
+        <svg viewBox="0 0 80 80" fill="none"><circle cx="40" cy="40" r="24" stroke="currentColor" stroke-width="1.5"/><line x1="28" y1="28" x2="52" y2="52" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <p class="empty-title">Can't reach Transmission</p>
+      <p class="empty-hint">Make sure the daemon is running, then try again.</p>
+      <button class="btn-primary btn-retry" id="btn-retry" type="button">Retry</button>
+    </div>
+
+    <div class="list-columns" id="list-columns" aria-hidden="true">
+      <span class="list-col-check"></span>
+      <span class="list-col-expand"></span>
+      <span class="list-col-icon"></span>
+      <span class="list-col-name">Name</span>
+      <span class="list-col-size">Size</span>
+      <span class="list-col-date">Modified</span>
+      <span class="list-col-actions"></span>
+    </div>
+
+    <div class="file-list" id="file-list" role="list"></div>
+
+    <div class="speed-graph-panel" id="speed-graph-panel">
+      <div class="speed-graph-resize-handle" id="speed-graph-resize" title="Drag to resize graph" aria-label="Drag to resize speed graph"></div>
+      <div class="speed-graph-header">
+        <div class="speed-graph-legend">
+          <span class="speed-legend-item dl">
+            <span class="speed-legend-swatch" aria-hidden="true"></span>
+            <span class="speed-legend-label">Download</span>
+            <strong class="speed-legend-value" id="graph-dl-current">0 KB/s</strong>
+          </span>
+          <span class="speed-legend-item ul">
+            <span class="speed-legend-swatch" aria-hidden="true"></span>
+            <span class="speed-legend-label">Upload</span>
+            <strong class="speed-legend-value" id="graph-ul-current">0 KB/s</strong>
+          </span>
+        </div>
+        <div class="speed-graph-controls">
+          <span class="speed-graph-range" id="graph-range-label">Last 5 minutes</span>
+          <button class="speed-graph-toggle" id="speed-graph-toggle" type="button" title="Collapse graph" aria-expanded="true" aria-controls="speed-graph-body">
+            <svg class="icon-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            <svg class="icon-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 15 12 9 18 15"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="speed-graph-body" id="speed-graph-body">
+        <div class="speed-graph-wrap" id="speed-graph-wrap">
+          <canvas id="speed-graph" role="img" aria-label="Download and upload speed over time"></canvas>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  </div>
+</div>
+
+<dialog class="cs-dialog menu-dialog" id="menu-dialog" data-no-backdrop-close>
+  <div class="dialog-panel menu-panel">
+    <div class="dialog-header">
+      <div class="menu-header-text">
+        <h2>Menu</h2>
+        <p class="menu-subtitle" id="menu-connection-status">Checking connection…</p>
+      </div>
+      <button class="dialog-close" data-close="menu-dialog" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="menu-stats" id="menu-stats">
+      <div class="menu-stats-grid">
+        <div class="menu-stat">
+          <span class="menu-stat-label">Download</span>
+          <span class="menu-stat-value dl" id="menu-dl-speed">0 KB/s</span>
+        </div>
+        <div class="menu-stat">
+          <span class="menu-stat-label">Upload</span>
+          <span class="menu-stat-value ul" id="menu-ul-speed">0 KB/s</span>
+        </div>
+      </div>
+      <p class="menu-stat-summary" id="menu-torrent-count">0 torrents</p>
+    </div>
+
+    <div class="menu-body">
+      <section class="menu-section">
+        <h3 class="menu-section-title">Transfer</h3>
+        <div class="menu-actions-row">
+          <button class="menu-action-btn" id="menu-pause-all" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            Pause all
+          </button>
+          <button class="menu-action-btn" id="menu-resume-all" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Resume all
+          </button>
+        </div>
+        <button class="menu-item menu-item-warn" id="menu-clear-completed" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>
+          Clear completed
+        </button>
+      </section>
+
+      <section class="menu-section">
+        <h3 class="menu-section-title">View</h3>
+        <div class="menu-filters" id="menu-filters">
+          <button class="menu-filter active" data-filter="all" type="button">All</button>
+          <button class="menu-filter" data-filter="downloading" type="button">Active</button>
+          <button class="menu-filter" data-filter="seeding" type="button">Seeding</button>
+          <button class="menu-filter" data-filter="paused" type="button">Paused</button>
+          <button class="menu-filter" data-filter="error" type="button">Errors</button>
+        </div>
+      </section>
+
+      <section class="menu-section">
+        <h3 class="menu-section-title">Session</h3>
+        <label class="menu-toggle-row" for="menu-alt-speed">
+          <span class="menu-toggle-label">
+            Alternative speed limits
+            <em id="menu-alt-speed-hint">Off</em>
+          </span>
+          <input type="checkbox" id="menu-alt-speed" class="menu-toggle-input" />
+          <span class="menu-toggle-switch" aria-hidden="true"></span>
+        </label>
+        <button class="menu-item" id="menu-verify-all" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Verify all torrents
+        </button>
+      </section>
+
+      <section class="menu-section">
+        <h3 class="menu-section-title">Options</h3>
+        <button class="menu-item" id="menu-settings" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Settings
+        </button>
+        <button class="menu-item" id="menu-wishlist" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          Wishlist
+        </button>
+        <button class="menu-item" id="menu-theme" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/></svg>
+          Toggle appearance
+        </button>
+      </section>
+    </div>
+
+    <div class="menu-footer">
+      <span id="app-name-footer">CloudSeed</span>
+      <span class="menu-version" id="menu-version"></span>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog download-dialog" id="download-modal">
+  <div class="dialog-panel download-panel">
+    <div class="dialog-header">
+      <div class="dialog-title-group">
+        <div class="modal-file-icon" id="modal-icon"></div>
+        <div class="dialog-title-text">
+          <h2 id="modal-torrent-name">Torrent</h2>
+          <p class="modal-meta" id="modal-meta"></p>
+        </div>
+      </div>
+      <button class="dialog-close" id="modal-close" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <p class="modal-subtitle" id="modal-subtitle"></p>
+
+    <div class="zip-bar" id="zip-bar" hidden>
+      <div class="zip-bar-inner">
+        <div class="zip-bar-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/></svg>
+          <div>
+            <span class="zip-label">Download as ZIP</span>
+            <span class="zip-size" id="zip-size"></span>
+          </div>
+        </div>
+        <div class="zip-bar-right">
+          <button class="btn-secondary copy-link-btn" id="btn-copy-zip-link" data-url="" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy link
+          </button>
+          <a class="btn-primary" id="btn-zip-download" href="#">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download
+          </a>
+        </div>
+      </div>
+      <div class="zip-warning" id="zip-warning" hidden></div>
+    </div>
+
+    <div class="modal-divider" id="modal-divider" hidden>
+      <span>individual files</span>
+    </div>
+
+    <ul class="modal-file-list" id="modal-file-list"></ul>
+
+    <div class="dialog-footer">
+      <button class="btn-secondary" id="btn-copy-all" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        Copy all links
+      </button>
+      <button class="btn-secondary" id="modal-cancel-btn" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog settings-dialog" id="settings-modal" data-no-backdrop-close>
+  <div class="dialog-panel settings-panel">
+    <div class="dialog-header settings-header">
+      <div>
+        <h2>Settings</h2>
+        <p class="settings-subtitle">Transmission session preferences</p>
+      </div>
+      <button class="dialog-close" data-close="settings-modal" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="Settings sections">
+        <button class="settings-tab active" type="button" data-tab="speed">Speed</button>
+        <button class="settings-tab" type="button" data-tab="queues">Queues</button>
+        <button class="settings-tab" type="button" data-tab="network">Network</button>
+      </nav>
+
+      <div class="settings-panes">
+        <section class="settings-pane active" id="settings-pane-speed" data-pane="speed">
+          <div class="settings-group">
+            <h3 class="settings-group-title">Global limits</h3>
+
+            <div class="settings-field">
+              <div class="settings-field-head">
+                <label class="settings-label" for="setting-dl-enabled">Download speed limit</label>
+                <label class="settings-switch">
+                  <input type="checkbox" id="setting-dl-enabled" class="settings-switch-input" />
+                  <span class="settings-switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <p class="settings-desc">Cap total download bandwidth</p>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-dl-limit" min="0" step="100" class="settings-input" placeholder="0" />
+                <span class="settings-unit">KB/s</span>
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <div class="settings-field-head">
+                <label class="settings-label" for="setting-ul-enabled">Upload speed limit</label>
+                <label class="settings-switch">
+                  <input type="checkbox" id="setting-ul-enabled" class="settings-switch-input" />
+                  <span class="settings-switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <p class="settings-desc">Cap total upload bandwidth</p>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-ul-limit" min="0" step="100" class="settings-input" placeholder="0" />
+                <span class="settings-unit">KB/s</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h3 class="settings-group-title">Alternative limits</h3>
+            <p class="settings-group-desc">Used when alternative speed mode is enabled from the menu</p>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-alt-dl-limit">Alternative download</label>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-alt-dl-limit" min="0" step="100" class="settings-input" placeholder="0" />
+                <span class="settings-unit">KB/s</span>
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-alt-ul-limit">Alternative upload</label>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-alt-ul-limit" min="0" step="100" class="settings-input" placeholder="0" />
+                <span class="settings-unit">KB/s</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" id="settings-pane-queues" data-pane="queues" hidden>
+          <div class="settings-group">
+            <h3 class="settings-group-title">Active transfers</h3>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-dl-queue">Maximum active downloads</label>
+              <p class="settings-desc">How many torrents download at once</p>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-dl-queue" min="0" step="1" class="settings-input" placeholder="0" />
+                <span class="settings-unit">torrents</span>
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-seed-queue">Maximum active uploads</label>
+              <p class="settings-desc">How many torrents seed at once · 0 = unlimited</p>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-seed-queue" min="0" step="1" class="settings-input" placeholder="0" />
+                <span class="settings-unit">torrents</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h3 class="settings-group-title">Seeding</h3>
+
+            <div class="settings-field">
+              <div class="settings-field-head">
+                <label class="settings-label" for="setting-ratio-enabled">Stop seeding at ratio</label>
+                <label class="settings-switch">
+                  <input type="checkbox" id="setting-ratio-enabled" class="settings-switch-input" />
+                  <span class="settings-switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <p class="settings-desc">Automatically stop seeding when ratio is reached</p>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-ratio-limit" min="0" step="0.1" class="settings-input" placeholder="2.0" />
+                <span class="settings-unit">ratio</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-pane" id="settings-pane-network" data-pane="network" hidden>
+          <div class="settings-group">
+            <h3 class="settings-group-title">Storage</h3>
+
+            <div class="settings-field">
+              <label class="settings-label">Download folder</label>
+              <p class="settings-desc">Default location for completed files</p>
+              <div class="settings-readonly" id="setting-download-dir">—</div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h3 class="settings-group-title">Peers</h3>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-peer-torrent">Peers per torrent</label>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-peer-torrent" min="0" step="10" class="settings-input" placeholder="50" />
+                <span class="settings-unit">peers</span>
+              </div>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-peer-global">Global peer limit</label>
+              <div class="settings-input-wrap">
+                <input type="number" id="setting-peer-global" min="0" step="50" class="settings-input" placeholder="200" />
+                <span class="settings-unit">peers</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h3 class="settings-group-title">Behavior</h3>
+
+            <div class="settings-field settings-field-inline">
+              <div>
+                <span class="settings-label">Start added torrents paused</span>
+                <p class="settings-desc">New torrents wait until you resume them</p>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setting-start-paused" class="settings-switch-input" />
+                <span class="settings-switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
+
+            <div class="settings-field settings-field-inline">
+              <div>
+                <span class="settings-label">Enable DHT</span>
+                <p class="settings-desc">Distributed hash table for peer discovery</p>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setting-dht" class="settings-switch-input" />
+                <span class="settings-switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
+
+            <div class="settings-field settings-field-inline">
+              <div>
+                <span class="settings-label">Enable PEX</span>
+                <p class="settings-desc">Peer exchange with connected clients</p>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setting-pex" class="settings-switch-input" />
+                <span class="settings-switch-track" aria-hidden="true"></span>
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="dialog-footer settings-footer">
+      <button class="btn-secondary" data-close="settings-modal" type="button">Cancel</button>
+      <button class="btn-primary" id="settings-save" type="button">Save changes</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog picker-dialog" id="torrent-files-dialog" data-no-backdrop-close>
+  <div class="dialog-panel picker-panel">
+    <div class="dialog-header">
+      <div class="dialog-title-text">
+        <h2>Select files to download</h2>
+        <p class="modal-meta" id="picker-torrent-name">Loading…</p>
+        <p class="picker-meta" id="picker-meta"></p>
+      </div>
+      <button class="dialog-close" id="picker-close" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="picker-loading" id="picker-loading">
+      <div class="spinner sm"></div>
+      <span>Reading torrent metadata…</span>
+    </div>
+
+    <div class="picker-body" id="picker-body" hidden>
+      <div class="picker-toolbar">
+        <label class="picker-select-all-wrap">
+          <input type="checkbox" class="row-checkbox" id="picker-select-all" checked />
+          <span class="checkmark"></span>
+          <span>Select all</span>
+        </label>
+        <span class="picker-summary" id="picker-summary"></span>
+      </div>
+      <div class="picker-list-head" aria-hidden="true">
+        <span></span>
+        <span>Name</span>
+        <span>Size</span>
+      </div>
+      <ul class="picker-file-list" id="picker-file-list"></ul>
+    </div>
+
+    <div class="dialog-footer picker-footer">
+      <p class="picker-footer-hint">Unchecked files are skipped. You can enable them later from the torrent row.</p>
+      <div class="picker-footer-actions">
+        <button class="btn-secondary" id="picker-cancel" type="button">Cancel</button>
+        <button class="btn-primary" id="picker-start" type="button" disabled>Start download</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog confirm-dialog" id="clear-completed-dialog">
+  <div class="dialog-panel confirm-panel">
+    <h3>Clear completed torrents?</h3>
+    <p id="clear-completed-message" class="confirm-text"></p>
+    <p class="confirm-warning">Removes finished torrents from the list. Downloaded files stay on disk.</p>
+    <div class="confirm-actions">
+      <button class="btn-secondary" id="clear-completed-cancel" type="button">Cancel</button>
+      <button class="btn-danger" id="clear-completed-confirm" type="button">Remove</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog confirm-dialog" id="delete-dialog">
+  <div class="dialog-panel confirm-panel">
+    <h3>Delete permanently?</h3>
+    <p id="delete-message" class="confirm-text"></p>
+    <p class="confirm-warning">This removes the torrent and deletes all downloaded files from disk.</p>
+    <div class="confirm-actions">
+      <button class="btn-secondary" id="delete-cancel" type="button">Cancel</button>
+      <button class="btn-danger" id="delete-confirm" type="button">Delete</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="toast-container" aria-live="polite"></div>
+
+<script src="./cloudseed.js"></script>
+</body>
 </html>
