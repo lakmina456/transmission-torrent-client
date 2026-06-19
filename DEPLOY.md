@@ -1,16 +1,19 @@
 # CloudSeed — Ubuntu VPS Deployment Guide
+
 ### Oracle Cloud Free Tier · 1 GB RAM · Ubuntu 22.04
 
 ---
 
 ## What You're Deploying
 
-| Component | Role |
-|---|---|
-| **Transmission-daemon** | BitTorrent engine, runs headless, exposes JSON-RPC on port 9091 |
-| **nginx** | Reverse proxy — serves the web UI, proxies RPC, serves downloaded files |
-| **CloudSeed UI** | The new Seedr-style frontend (your `web/public_html/` files) |
-| **zipper.py** | Flask micro-service (port 5001) — streams folders as ZIP on-the-fly |
+
+| Component               | Role                                                                    |
+| ----------------------- | ----------------------------------------------------------------------- |
+| **Transmission-daemon** | BitTorrent engine, runs headless, exposes JSON-RPC on port 9091         |
+| **nginx**               | Reverse proxy — serves the web UI, proxies RPC, serves downloaded files |
+| **CloudSeed UI**        | The new Seedr-style frontend (your `web/public_html/` files)            |
+| **zipper.py**           | Flask micro-service (port 5001) — streams folders as ZIP on-the-fly     |
+
 
 ---
 
@@ -19,18 +22,17 @@
 - Oracle Cloud free-tier VM running **Ubuntu 22.04**
 - SSH access to the VM
 - A domain name **or** just the public IP (the guide works with IP only)
-- Source repo: [github.com/lakmina456/transmission-torrent-client](https://github.com/lakmina456/transmission-torrent-client) (CloudSeed UI + deploy scripts)
-- Local clone for `scp` uploads (adjust path to your machine), e.g. `f:\vps\transmission-torrent-client\`
+- Source repo (public): [github.com/lakmina456/transmission-torrent-client](https://github.com/lakmina456/transmission-torrent-client) — CloudSeed UI, `zipper.py`, and deploy scripts (default branch: `develop`)
 
 ---
 
 ## Step 1 — First Login & System Update
 
 ```bash
-ssh ubuntu@YOUR_VPS_IP
+ssh ubuntu@92.4.71.82
 
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl wget unzip ufw
+sudo apt install -y curl wget unzip ufw git
 ```
 
 ---
@@ -38,14 +40,17 @@ sudo apt install -y curl wget unzip ufw
 ## Step 2 — Open Firewall Ports
 
 ### Oracle Cloud Security List (do this in the web console)
+
 1. Go to **Networking → Virtual Cloud Networks → your VCN → Security Lists**
 2. Add **Ingress Rules**:
 
-| Protocol | Port | Source CIDR | Note |
-|---|---|---|---|
-| TCP | 22 | 0.0.0.0/0 | SSH |
-| TCP | 80 | 0.0.0.0/0 | HTTP |
-| TCP | 443 | 0.0.0.0/0 | HTTPS (optional) |
+
+| Protocol | Port | Source CIDR | Note             |
+| -------- | ---- | ----------- | ---------------- |
+| TCP      | 22   | 0.0.0.0/0   | SSH              |
+| TCP      | 80   | 0.0.0.0/0   | HTTP             |
+| TCP      | 443  | 0.0.0.0/0   | HTTPS (optional) |
+
 
 > Port 9091 (Transmission) and 5001 (zipper) stay **closed** — nginx proxies them internally.
 
@@ -132,31 +137,47 @@ sudo systemctl start nginx
 
 ## Step 5 — Deploy CloudSeed Web UI
 
-### Copy files from your Windows machine
+All commands below run **on the VPS** after you SSH in. Files come from GitHub — no `scp` from your PC required.
 
-Run this **on your Windows machine** (in PowerShell):
+### Clone the repo from GitHub
 
-```powershell
-# Copy the web UI files
-scp -r "f:\vps\transmission-torrent-client\web\public_html\*" `
-    ubuntu@YOUR_VPS_IP:/tmp/cloudseed-ui/
-
-# Copy the zipper service
-scp "f:\vps\transmission-torrent-client\server\zipper.py" `
-    ubuntu@YOUR_VPS_IP:/tmp/zipper.py
+```bash
+sudo mkdir -p /opt/cloudseed
+sudo git clone -b develop https://github.com/lakmina456/transmission-torrent-client.git /opt/cloudseed/src
 ```
 
-### Move files into place (back on VPS)
+> The clone lives at `/opt/cloudseed/src/` and is reused later for UI updates (Step 11).
+
+To use a different branch: (do not do this)
+
+```bash
+sudo git clone -b YOUR_BRANCH https://github.com/lakmina456/transmission-torrent-client.git /opt/cloudseed/src
+```
+
+### Install the web UI
 
 ```bash
 # Web UI → Transmission's web root
 sudo mkdir -p /var/lib/transmission-daemon/info/web
-sudo cp -r /tmp/cloudseed-ui/* /var/lib/transmission-daemon/info/web/
+sudo cp -r /opt/cloudseed/src/web/public_html/* /var/lib/transmission-daemon/info/web/
 sudo chown -R debian-transmission:debian-transmission /var/lib/transmission-daemon/info/web/
 
 # Verify
-ls /var/lib/transmission-daemon/info/web/
+sudo ls -la /var/lib/transmission-daemon/info/web/
 # Should show: index.html  cloudseed.css  cloudseed.js  config.js  images/
+```
+
+Tell Transmission where the CloudSeed files are (required — it does not use this path by default):
+
+```bash
+sudo mkdir -p /etc/systemd/system/transmission-daemon.service.d
+sudo tee /etc/systemd/system/transmission-daemon.service.d/cloudseed-web.conf <<'EOF'
+[Service]
+Environment=TRANSMISSION_WEB_HOME=/var/lib/transmission-daemon/info/web
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart transmission-daemon
 ```
 
 ### Edit config.js for production
@@ -179,23 +200,25 @@ window.APP_CONFIG = {
 };
 ```
 
+Save in nano: **Ctrl+O**, Enter, **Ctrl+X**.
+
 ---
 
 ## Step 6 — Deploy the ZIP Streaming Service
 
 ### Install Python dependencies
 
+Use the Debian package (do **not** use `pip3 install` on Ubuntu 22.04+ — PEP 668 blocks system-wide pip):
+
 ```bash
-sudo apt install -y python3-pip python3-flask
-# OR if pip is preferred:
-pip3 install flask
+sudo apt install -y python3-flask
 ```
 
 ### Place the script
 
 ```bash
 sudo mkdir -p /opt/cloudseed
-sudo cp /tmp/zipper.py /opt/cloudseed/zipper.py
+sudo cp /opt/cloudseed/src/server/zipper.py /opt/cloudseed/zipper.py
 sudo chmod +x /opt/cloudseed/zipper.py
 ```
 
@@ -245,7 +268,7 @@ sudo apt install -y apache2-utils
 
 # Replace 'admin' with your preferred username
 sudo htpasswd -c /etc/nginx/.htpasswd admin
-# Enter password when prompted
+# Enter a strong password when prompted (you choose it — not your SSH password)
 ```
 
 ### Write the nginx site config
@@ -270,6 +293,7 @@ server {
         proxy_set_header   Host $host;
         proxy_set_header   X-Real-IP $remote_addr;
         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   Authorization "";
         proxy_read_timeout 60s;
     }
 
@@ -360,12 +384,13 @@ sudo systemctl restart nginx
 Open your browser:
 
 ```
-http://YOUR_VPS_IP/transmission/web/
+http://92.4.71.82/transmission/web/
 ```
 
 Enter the username/password you set in Step 7.
 
 You should see the CloudSeed UI with:
+
 - ✅ Green connection dot (top right)
 - ✅ Storage meter showing used/free space
 - ✅ "No torrents here" empty state
@@ -375,19 +400,23 @@ You should see the CloudSeed UI with:
 ## Step 10 — Test Everything
 
 ### Add a test torrent
+
 Paste any magnet link into the input box → click **Add**.
 Watch the card appear with a live progress bar.
 
 ### Test file download
+
 Once complete, click **Download** on the card.
+
 - Single file → direct `.mkv` / `.mp4` link (IDM-compatible)
 - Folder → ZIP download bar + individual file links
 
 ### Test the ZIP service manually
+
 ```bash
 # After a folder torrent completes, replace "FolderName" with the actual folder
 curl -u admin:yourpassword \
-  "http://YOUR_VPS_IP/zip?path=FolderName" \
+  "http://92.4.71.82/zip?path=FolderName" \
   -o test.zip -v
 ```
 
@@ -426,7 +455,87 @@ sudo rm -rf "/var/lib/transmission-daemon/downloads/FolderName"
 
 ## Troubleshooting
 
+### Login prompt keeps coming back (username/password loop)
+
+The browser is sending credentials, but nginx returns **401 Unauthorized** — wrong user/password, or no `.htpasswd` file.
+
+**On the VPS**, reset the password (pick something simple to test, e.g. `CloudSeed123`):
+
+```bash
+# Create or update user 'admin' (omit -c if the file already exists and you only want to change the password)
+sudo htpasswd /etc/nginx/.htpasswd admin
+
+# If the file is missing, create it instead:
+# sudo htpasswd -c /etc/nginx/.htpasswd admin
+
+sudo chmod 640 /etc/nginx/.htpasswd
+sudo chown root:www-data /etc/nginx/.htpasswd
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Verify login works (replace `admin` and password). Use **GET** — `curl -I` sends HEAD, which Transmission rejects:
+
+```bash
+curl -s -u admin:CloudSeed123 http://127.0.0.1/transmission/web/ | head -5
+```
+
+You want HTML starting with `<!DOCTYPE` or `<html` — not `401 Unauthorized`.
+
+**In the browser:**
+
+- Use username **`admin`** exactly (case-sensitive), unless you chose a different name in `htpasswd`.
+- This is **not** your Ubuntu SSH password.
+- Try a **private/incognito** window so old wrong passwords are not cached.
+- If it still loops, click **Cancel**, close the tab, open a new tab, and try again.
+
+### 401 after login (nginx page or "401: Unauthorized")
+
+nginx validated your password, but forwarded the `Authorization` header to Transmission. If Transmission RPC auth is enabled, it rejects nginx credentials.
+
+**Fix 1 — strip the header in nginx** (add inside `location /transmission/`):
+
+```nginx
+proxy_set_header Authorization "";
+```
+
+Then:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**Fix 2 — disable Transmission RPC password** (recommended when nginx handles auth):
+
+```bash
+sudo systemctl stop transmission-daemon
+sudo nano /etc/transmission-daemon/settings.json
+```
+
+Set `"rpc-authentication-required": false`, save, then:
+
+```bash
+sudo systemctl start transmission-daemon
+```
+
+**Fix 3 — point Transmission at CloudSeed files** (if you see the old Transmission UI or "Couldn't find web interface files"):
+
+```bash
+sudo tee /etc/systemd/system/transmission-daemon.service.d/cloudseed-web.conf <<'EOF'
+[Service]
+Environment=TRANSMISSION_WEB_HOME=/var/lib/transmission-daemon/info/web
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart transmission-daemon
+```
+
+Test with GET (not `curl -I`):
+
+```bash
+curl -s -u admin:YOUR_PASSWORD http://127.0.0.1/transmission/web/ | head -5
+```
+
 ### Green dot is red / "Disconnected"
+
 ```bash
 # Check Transmission is running
 sudo systemctl status transmission-daemon
@@ -436,17 +545,20 @@ curl -s http://127.0.0.1:9091/transmission/rpc
 # If you see 409 — Transmission is running fine (CSRF token response)
 
 # Check nginx is proxying correctly
-curl -u admin:pass http://YOUR_VPS_IP/transmission/rpc
+curl -u admin:pass http://92.4.71.82/transmission/rpc
 ```
 
 ### Storage meter shows wrong value
+
 Edit `config.js` and set `totalStorageGB` to match your actual disk:
+
 ```bash
 df -h /var/lib/transmission-daemon/downloads
 # Look at the "Size" column
 ```
 
 ### Download button says "File not found"
+
 ```bash
 # Check the file actually exists
 ls /var/lib/transmission-daemon/downloads/
@@ -457,6 +569,7 @@ sudo -u www-data ls /var/lib/transmission-daemon/downloads/
 ```
 
 ### ZIP download fails immediately
+
 ```bash
 # Check zipper service is running
 sudo systemctl status cloudseed-zipper
@@ -467,6 +580,7 @@ sudo -u www-data ls /var/lib/transmission-daemon/downloads/
 ```
 
 ### Transmission won't start after editing settings.json
+
 ```bash
 # Validate JSON syntax
 python3 -m json.tool /etc/transmission-daemon/settings.json
@@ -475,6 +589,7 @@ sudo systemctl start transmission-daemon
 ```
 
 ### Out of memory (1 GB RAM is tight)
+
 ```bash
 # Add 1 GB swap to help
 sudo fallocate -l 1G /swapfile
@@ -505,19 +620,23 @@ sudo systemctl status certbot.timer
 
 ---
 
-## Step 9 — Git-based updates (Menu → Check for updates)
+## Step 11 — Git-based updates (Menu → Check for updates)
 
 This enables the **Updates** tab in Settings: check GitHub for new commits and deploy from the UI.
 
-Repo: **https://github.com/lakmina456/transmission-torrent-client** (default branch: `main`)
+Repo: **[https://github.com/lakmina456/transmission-torrent-client](https://github.com/lakmina456/transmission-torrent-client)** (default branch: `develop`)
 
-### 9a — Clone the repo on the VPS
+### 11a — Repo on the VPS
+
+If you followed **Step 5**, the repo is already at `/opt/cloudseed/src` — skip to **11b**.
+
+Otherwise clone it now:
 
 **Option A — HTTPS (simplest; repo is public)**
 
 ```bash
 sudo mkdir -p /opt/cloudseed
-sudo git clone https://github.com/lakmina456/transmission-torrent-client.git /opt/cloudseed/src
+sudo git clone -b develop https://github.com/lakmina456/transmission-torrent-client.git /opt/cloudseed/src
 ```
 
 **Option B — Deploy key over SSH (recommended for unattended `git pull` in the updater)**
@@ -541,12 +660,19 @@ Host github-cloudseed
 EOF
 
 sudo mkdir -p /opt/cloudseed
-sudo git clone git@github-cloudseed:lakmina456/transmission-torrent-client.git /opt/cloudseed/src
+sudo git clone -b develop git@github-cloudseed:lakmina456/transmission-torrent-client.git /opt/cloudseed/src
 ```
 
-> To track a different branch, set `CLOUDSEED_BRANCH` in `/etc/cloudseed/deploy.env`.
+Set the branch the updater tracks (must match what you cloned):
 
-### 9b — Install deploy + updater scripts
+```bash
+sudo cp /opt/cloudseed/src/server/deploy.env.example /etc/cloudseed/deploy.env
+sudo nano /etc/cloudseed/deploy.env
+# Set: CLOUDSEED_BRANCH=develop
+sudo chmod 600 /etc/cloudseed/deploy.env
+```
+
+### 11b — Install deploy + updater scripts
 
 ```bash
 sudo mkdir -p /opt/cloudseed /etc/cloudseed
@@ -555,7 +681,7 @@ sudo cp /opt/cloudseed/src/server/updater.py /opt/cloudseed/updater.py
 sudo chmod +x /opt/cloudseed/deploy.sh /opt/cloudseed/updater.py
 ```
 
-### 9c — Secrets (required — do NOT commit these)
+### 11c — Secrets (required — do NOT commit these)
 
 Generate an update token:
 
@@ -579,13 +705,15 @@ sudo chown root:root /etc/cloudseed/updater.env
 
 Optional path overrides: copy `server/deploy.env.example` → `/etc/cloudseed/deploy.env`.
 
-| File on VPS | Purpose | In git? |
-|---|---|---|
-| `/etc/cloudseed/updater.env` | `UPDATE_TOKEN` and service config | **Never** |
-| `/etc/cloudseed/deploy.env` | Optional repo paths / branch | **Never** |
+
+| File on VPS                        | Purpose                                             | In git?            |
+| ---------------------------------- | --------------------------------------------------- | ------------------ |
+| `/etc/cloudseed/updater.env`       | `UPDATE_TOKEN` and service config                   | **Never**          |
+| `/etc/cloudseed/deploy.env`        | Optional repo paths / branch                        | **Never**          |
 | `web/public_html/config.js` on VPS | Production RPC paths, storage — preserved on update | **Never** (on VPS) |
 
-### 9d — Sudoers (www-data may only run deploy.sh)
+
+### 11d — Sudoers (www-data may only run deploy.sh)
 
 ```bash
 sudo cp /opt/cloudseed/src/server/cloudseed-updater.sudoers /etc/sudoers.d/cloudseed-updater
@@ -593,7 +721,7 @@ sudo chmod 440 /etc/sudoers.d/cloudseed-updater
 sudo visudo -c
 ```
 
-### 9e — Updater systemd service
+### 11e — Updater systemd service
 
 ```bash
 sudo cp /opt/cloudseed/src/server/cloudseed-updater.service /etc/systemd/system/
@@ -606,7 +734,17 @@ curl -s http://127.0.0.1:5002/health
 # Expected: {"status":"ok","service":"cloudseed-updater","updateConfigured":true}
 ```
 
-### 9f — First deploy + nginx reload
+### 11f — First deploy + nginx reload
+
+If you cloned the `develop` branch in Step 5, set the branch before the first automated deploy:
+
+```bash
+sudo cp /opt/cloudseed/src/server/deploy.env.example /etc/cloudseed/deploy.env
+echo 'CLOUDSEED_BRANCH=develop' | sudo tee -a /etc/cloudseed/deploy.env
+sudo chmod 600 /etc/cloudseed/deploy.env
+```
+
+Then deploy:
 
 ```bash
 sudo /opt/cloudseed/deploy.sh
@@ -615,7 +753,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ### Using updates from the UI
 
-1. Push changes to GitHub from your dev machine.
+1. Push changes to the `develop` branch on GitHub (or the branch set in `/etc/cloudseed/deploy.env`).
 2. Open CloudSeed → **Menu** → **Check for updates**.
 3. Click **Check for updates**.
 4. Enter your `UPDATE_TOKEN` and click **Update now**.
@@ -629,21 +767,23 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## File Locations Reference
 
-| What | Path |
-|---|---|
-| CloudSeed UI files | `/var/lib/transmission-daemon/info/web/` |
-| Downloaded torrents | `/var/lib/transmission-daemon/downloads/` |
-| Transmission config | `/etc/transmission-daemon/settings.json` |
-| nginx site config | `/etc/nginx/sites-available/cloudseed` |
-| nginx auth file | `/etc/nginx/.htpasswd` |
-| ZIP service script | `/opt/cloudseed/zipper.py` |
-| ZIP systemd unit | `/etc/systemd/system/cloudseed-zipper.service` |
-| Git clone (updates) | `/opt/cloudseed/src/` |
-| Deploy script | `/opt/cloudseed/deploy.sh` |
-| Updater API script | `/opt/cloudseed/updater.py` |
-| Updater secrets | `/etc/cloudseed/updater.env` |
-| Updater systemd unit | `/etc/systemd/system/cloudseed-updater.service` |
-| Installed version | `/var/lib/transmission-daemon/info/web/version.json` |
+
+| What                 | Path                                                 |
+| -------------------- | ---------------------------------------------------- |
+| CloudSeed UI files   | `/var/lib/transmission-daemon/info/web/`             |
+| Downloaded torrents  | `/var/lib/transmission-daemon/downloads/`            |
+| Transmission config  | `/etc/transmission-daemon/settings.json`             |
+| nginx site config    | `/etc/nginx/sites-available/cloudseed`               |
+| nginx auth file      | `/etc/nginx/.htpasswd`                               |
+| ZIP service script   | `/opt/cloudseed/zipper.py`                           |
+| ZIP systemd unit     | `/etc/systemd/system/cloudseed-zipper.service`       |
+| Git clone (updates)  | `/opt/cloudseed/src/`                                |
+| Deploy script        | `/opt/cloudseed/deploy.sh`                           |
+| Updater API script   | `/opt/cloudseed/updater.py`                          |
+| Updater secrets      | `/etc/cloudseed/updater.env`                         |
+| Updater systemd unit | `/etc/systemd/system/cloudseed-updater.service`      |
+| Installed version    | `/var/lib/transmission-daemon/info/web/version.json` |
+
 
 ---
 
@@ -662,3 +802,4 @@ nginx :80  (auth gating)
                                          │
                                          └── reads from /var/lib/.../downloads/
 ```
+
