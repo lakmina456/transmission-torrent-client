@@ -252,6 +252,8 @@
           </div>
           <div class="list-columns-actions" id="list-columns-actions">
             <button class="selection-btn selection-btn-cancel" id="btn-clear-selection" type="button">Cancel</button>
+            <button class="selection-btn selection-btn-action" id="btn-pause-selected" type="button">Pause</button>
+            <button class="selection-btn selection-btn-action" id="btn-resume-selected" type="button">Resume</button>
             <button class="selection-btn selection-btn-delete" id="btn-delete-selected" type="button">Delete</button>
           </div>
         </div>
@@ -426,6 +428,13 @@
                 </span>
                 <span class="menu-shortcut-title">Wishlist</span>
                 <span class="menu-shortcut-desc">Saved links</span>
+              </button>
+              <button class="menu-shortcut" id="menu-history" type="button">
+                <span class="menu-shortcut-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </span>
+                <span class="menu-shortcut-title">History</span>
+                <span class="menu-shortcut-desc">Completed downloads</span>
               </button>
               <button class="menu-shortcut" id="menu-settings" type="button">
                 <span class="menu-shortcut-icon" aria-hidden="true">
@@ -937,6 +946,43 @@
     <div class="confirm-actions">
       <button class="btn-secondary" id="delete-cancel" type="button">Cancel</button>
       <button class="btn-danger" id="delete-confirm" type="button">Delete</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog confirm-dialog" id="file-delete-dialog">
+  <div class="dialog-panel confirm-panel">
+    <h3>Delete files permanently?</h3>
+    <p id="file-delete-message" class="confirm-text"></p>
+    <p class="confirm-warning">Files are removed from disk immediately. This cannot be undone.</p>
+    <div class="confirm-actions">
+      <button class="btn-secondary" id="file-delete-cancel" type="button">Cancel</button>
+      <button class="btn-danger" id="file-delete-confirm" type="button">Delete</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="cs-dialog history-dialog" id="history-dialog" data-no-backdrop-close>
+  <div class="dialog-panel history-panel">
+    <div class="dialog-header">
+      <div>
+        <h2>Download history</h2>
+        <p class="settings-subtitle">Last <span id="history-count"></span> completed torrents</p>
+      </div>
+      <button class="dialog-close" data-close="history-dialog" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="history-body">
+      <div class="history-empty" id="history-empty" hidden>
+        <p>No history yet</p>
+        <span>Completed downloads will appear here</span>
+      </div>
+      <ul class="history-list" id="history-list"></ul>
+    </div>
+    <div class="dialog-footer">
+      <button class="btn-secondary btn-sm" id="btn-history-clear" type="button">Clear history</button>
+      <button class="btn-secondary" data-close="history-dialog" type="button">Close</button>
     </div>
   </div>
 </dialog>

@@ -3,6 +3,7 @@ window.APP_CONFIG = {
   rpcPath:            '/rpc',       // dev proxy forwards this to Transmission
   fileServerBase:     '/downloads',
   zipServerBase:      '/zip',
+  deleteServerBase:   '/delete',
   pollInterval:       3000,
   appName:            'CloudSeed',
   autoPasteMagnet:    true,

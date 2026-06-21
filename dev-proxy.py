@@ -3,6 +3,7 @@ dev-proxy.py — local development proxy for CloudSeed
 - Serves static files from web/public_html/
 - Proxies POST /rpc to Transmission
 - Serves GET /downloads/* directly from Transmission's download directory
+- Handles POST /delete for permanent file removal (local dev)
 - Handles Range requests so IDM / partial downloads work
 
 Usage:  python dev-proxy.py
@@ -99,6 +100,50 @@ def safe_join(base, rel):
     return full
 
 
+def prune_empty_dirs(path, root):
+    root = os.path.realpath(root)
+    current = os.path.dirname(os.path.realpath(path))
+    while current.startswith(root + os.sep):
+        try:
+            os.rmdir(current)
+        except OSError:
+            break
+        current = os.path.dirname(current)
+
+
+def remove_download_path(dl_dir, rel):
+    rel = (rel or '').strip().lstrip('/\\')
+    if not rel:
+        return 'error', 'empty path'
+
+    root = os.path.realpath(dl_dir)
+    removed_any = False
+    last_error = None
+
+    for candidate in (rel, os.path.join('.incomplete', rel)):
+        full = safe_join(root, candidate)
+        if full is None:
+            last_error = 'invalid path'
+            continue
+        if not os.path.lexists(full):
+            continue
+        try:
+            if os.path.isdir(full):
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+            prune_empty_dirs(full, root)
+            removed_any = True
+        except OSError as exc:
+            last_error = str(exc)
+
+    if removed_any:
+        return 'deleted', None
+    if last_error:
+        return 'error', last_error
+    return 'missing', None
+
+
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=STATIC_ROOT, **kwargs)
@@ -171,8 +216,11 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass   # client cancelled the download — normal
 
-    # ── POST /rpc → proxy to Transmission ─────────────────────────────────
+    # ── POST /rpc → proxy to Transmission; POST /delete → remove files ───
     def do_POST(self):
+        if self.path == '/delete':
+            self._handle_delete()
+            return
         if self.path not in ('/rpc', '/transmission/rpc'):
             self.send_error(404)
             return
@@ -187,6 +235,46 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             msg = f'Proxy error: {e}'.encode()
             self._send_rpc_response(502, '', msg, ct='text/plain')
+
+    def _handle_delete(self):
+        dl_dir = get_download_dir()
+        if not dl_dir:
+            self.send_error(503, 'Download directory not available (Transmission not connected?)')
+            return
+
+        length = int(self.headers.get('Content-Length', 0))
+        raw = self.rfile.read(length) if length else b'{}'
+        try:
+            payload = json.loads(raw.decode() or '{}')
+        except json.JSONDecodeError:
+            self.send_error(400, 'Invalid JSON body')
+            return
+
+        paths = payload.get('paths')
+        if not isinstance(paths, list) or not paths:
+            self.send_error(400, 'Missing paths array')
+            return
+
+        deleted, missing, errors = [], [], []
+        for rel in paths:
+            rel_str = str(rel).strip()
+            if not rel_str:
+                continue
+            status, err = remove_download_path(dl_dir, rel_str)
+            if status == 'deleted':
+                deleted.append(rel_str)
+            elif status == 'missing':
+                missing.append(rel_str)
+            else:
+                errors.append({'path': rel_str, 'error': err or 'delete failed'})
+
+        body = json.dumps({'deleted': deleted, 'missing': missing, 'errors': errors}).encode()
+        code = 200 if not errors else 207
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_rpc_response(self, status, sid, data, ct='application/json'):
         try:
@@ -213,7 +301,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             text = str(arg)
             if len(text) == 3 and text.isdigit():
                 code = text
-        if '/rpc' in path or '/downloads/' in path or code.startswith(('4', '5')):
+        if '/rpc' in path or '/downloads/' in path or '/delete' in path or code.startswith(('4', '5')):
             super().log_message(fmt, *args)
 
 

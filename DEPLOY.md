@@ -12,7 +12,7 @@
 | **Transmission-daemon** | BitTorrent engine, runs headless, exposes JSON-RPC on port 9091         |
 | **nginx**               | Reverse proxy — serves the web UI, proxies RPC, serves downloaded files |
 | **CloudSeed UI**        | The new Seedr-style frontend (your `web/public_html/` files)            |
-| **zipper.py**           | Flask micro-service (port 5001) — streams folders as ZIP on-the-fly     |
+| **zipper.py**           | Flask micro-service (port 5001) — streams folders as ZIP; permanent file delete via `POST /delete` |
 
 
 ---
@@ -193,6 +193,7 @@ window.APP_CONFIG = {
   rpcPath:            '/transmission/rpc',
   fileServerBase:     '/downloads',
   zipServerBase:      '/zip',
+  deleteServerBase:   '/delete',
   pollInterval:       3000,
   totalStorageGB:     44,          // Oracle free tier has ~46 GB — leave 2 GB headroom
   appName:            'CloudSeed',
@@ -327,6 +328,14 @@ server {
         add_header         X-Accel-Buffering no;
     }
 
+    # ── Permanent file delete (CloudSeed file panel) ──────────────────────
+    location = /delete {
+        proxy_pass         http://127.0.0.1:5001/delete;
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_read_timeout 60s;
+    }
+
     # ── App updates API (Menu → Check for updates) ─────────────────────────
     location /api/ {
         proxy_pass         http://127.0.0.1:5002/api/;
@@ -365,7 +374,7 @@ sudo systemctl reload nginx
 
 ## Step 8 — Fix File Permissions
 
-Transmission downloads as `debian-transmission`, but nginx and zipper.py run as `www-data`. Both need read access to the downloads folder.
+Transmission downloads as `debian-transmission`, but nginx and zipper.py run as `www-data`. Both need read access to the downloads folder; zipper also needs write access for permanent file delete.
 
 ```bash
 # Add www-data to the transmission group
@@ -901,9 +910,10 @@ nginx :80  (auth gating)
   ├── /transmission/web/*  →  static files from Transmission web root
   ├── /transmission/rpc    →  proxy → Transmission :9091
   ├── /downloads/*         →  alias → /var/lib/.../downloads/  (direct file serve)
+  ├── /delete              →  proxy → zipper.py :5001  (permanent file delete)
   ├── /api/*               →  proxy → updater.py :5002  (git deploy API)
   └── /zip?path=X          →  proxy → zipper.py :5001  (streaming ZIP)
                                          │
-                                         └── reads from /var/lib/.../downloads/
+                                         └── reads/writes /var/lib/.../downloads/
 ```
 

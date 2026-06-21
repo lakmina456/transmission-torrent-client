@@ -8,6 +8,7 @@ const CFG = window.APP_CONFIG || {};
 const RPC_PATH    = CFG.rpcPath          || '../rpc';
 const FILE_BASE   = CFG.fileServerBase   || '/downloads';
 const ZIP_BASE    = CFG.zipServerBase    || '/zip';
+const DELETE_BASE = CFG.deleteServerBase || '/delete';
 const POLL_MS     = CFG.pollInterval     || 3000;
 const APP_NAME    = CFG.appName          || 'CloudSeed';
 const AUTO_PASTE  = CFG.autoPasteMagnet  !== false;
@@ -19,8 +20,10 @@ const GRAPH_COLLAPSED_KEY = 'cloudseed-graph-collapsed';
 const GRAPH_DEFAULT_H = 120;
 const GRAPH_MIN_H     = 64;
 const GRAPH_MAX_H     = 420;
-const WISHLIST_KEY = 'cloudseed-wishlist';
-const THEME_KEY    = 'cloudseed-theme';
+const WISHLIST_KEY  = 'cloudseed-wishlist';
+const THEME_KEY     = 'cloudseed-theme';
+const HISTORY_KEY   = 'cloudseed-history';
+const HISTORY_MAX   = 200;
 
 const FILTER_OPTIONS = [
   { key: 'all',         label: 'All' },
@@ -38,8 +41,9 @@ let currentSort   = 'date';
 let sortDesc      = true;
 let searchQuery   = '';
 let isConnected   = false;
-let prevCompleted = new Set();
+let prevCompleted = null;
 let pendingDeleteIds = null;
+let pendingFileDelete = null;
 let wishlist      = [];
 let expandedTorrents = new Set();
 let fileSelections   = new Map();
@@ -69,7 +73,7 @@ const FIELDS = [
   'id','name','status','percentDone','sizeWhenDone','totalSize','leftUntilDone',
   'rateDownload','rateUpload','eta','addedDate','downloadDir',
   'files','fileStats','error','errorString','uploadRatio',
-  'uploadedEver','downloadedEver'
+  'uploadedEver','downloadedEver','peersConnected','peersSendingToUs'
 ];
 
 const EXT_MAP = {
@@ -561,7 +565,7 @@ function buildTorrentFileActionButtons(t, idx) {
     html += `<button class="torrent-file-cancel-tx-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Stop downloading this file" aria-label="Stop download">${ICON.pause}</button>`;
   }
 
-  html += `<button class="torrent-file-delete-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Remove from download" aria-label="Remove file">${ICON.trash}</button>`;
+  html += `<button class="torrent-file-delete-btn" data-tid="${t.id}" data-idx="${idx}" type="button" title="Delete permanently from disk" aria-label="Delete file permanently">${ICON.trash}</button>`;
   return html;
 }
 
@@ -636,25 +640,138 @@ function clearTorrentFileUiSelection(torrentId) {
   refreshTorrentFilesPanel(torrentId);
 }
 
-async function skipTorrentFiles(torrentId, indices) {
+function torrentFileRelPath(t, idx) {
+  const file = t.files?.[idx];
+  return file?.name ? String(file.name) : null;
+}
+
+async function deleteFilesOnServer(paths) {
+  const unique = [...new Set(paths.filter(Boolean))];
+  if (!unique.length) return { deleted: [], missing: [], errors: [] };
+
+  const r = await fetch(DELETE_BASE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths: unique }),
+    cache: 'no-store',
+  });
+
+  let payload = {};
+  try {
+    payload = await r.json();
+  } catch {
+    payload = {};
+  }
+
+  if (!r.ok && r.status !== 207) {
+    const msg = payload?.errors?.[0]?.error || `Delete failed (${r.status})`;
+    throw new Error(msg);
+  }
+  if (payload?.errors?.length) {
+    const msg = payload.errors.map(e => e.error || e.path).join('; ');
+    throw new Error(msg);
+  }
+  return payload;
+}
+
+function describeFileDeleteMessage(t, indices) {
+  const remove = normalizeFileIndices(indices);
+  if (!t || !remove.length) return 'Selected files will be deleted permanently from disk.';
+  if (remove.length >= (t.files?.length || 0) || (t.files?.length || 0) === 1) {
+    return `"${truncate(t.name, 55)}" and all its files will be removed from disk.`;
+  }
+  if (remove.length === 1) {
+    const file = t.files?.[remove[0]];
+    const name = file ? fileDisplayName(t, file, remove[0]) : 'this file';
+    return `"${truncate(name, 55)}" will be deleted permanently from disk.`;
+  }
+  return `${remove.length} files will be deleted permanently from disk.`;
+}
+
+function showFileDeleteConfirm(torrentId, indices) {
   const key = +torrentId;
+  const t = torrents[key];
+  if (!t?.files?.length) return;
+
+  const remove = normalizeFileIndices(indices);
+  if (!remove.length) return;
+
+  pendingFileDelete = { torrentId: key, indices: remove };
+  const msgEl = document.getElementById('file-delete-message');
+  if (msgEl) msgEl.textContent = describeFileDeleteMessage(t, remove);
+  document.getElementById('file-delete-dialog')?.showModal();
+}
+
+async function deleteTorrentFilesPermanently(torrentId, indices) {
+  const key = +torrentId;
+  await refreshTorrent(key);
   const t = torrents[key];
   if (!t?.files?.length) return;
 
   const remove = new Set(normalizeFileIndices(indices));
   if (!remove.size) return;
 
+  if (remove.size >= t.files.length) {
+    await removeTorrent(key, true);
+    expandedTorrents.delete(key);
+    toast('Deleted permanently', 'success');
+    await poll();
+    return;
+  }
+
+  const wasActive = t.status !== 0;
+  const paths = [...remove].map(i => torrentFileRelPath(t, i)).filter(Boolean);
+
+  if (wasActive) {
+    try { await rpc('torrent-stop', { ids: [key] }); } catch {}
+    await sleep(300);
+  }
+
   const wanted = t.files
     .map((_, i) => i)
     .filter(i => fileIsWanted(t.fileStats, i) && !remove.has(i));
-
   const sel = getFileSelection(key);
   remove.forEach(i => sel.delete(i));
 
   await applyFileSelection(key, wanted);
+
+  if (paths.length) {
+    await deleteFilesOnServer(paths);
+  }
+
+  remove.forEach(i => {
+    localFileReadyCache.delete(`${key}:${i}`);
+    const dlKey = fileDownloadKey(key, i);
+    const job = localFileDownloads.get(dlKey);
+    if (job) {
+      job.abort.abort();
+      localFileDownloads.delete(dlKey);
+    }
+  });
+
   refreshTorrentFilesPanel(key);
-  toast(remove.size > 1 ? `Removed ${remove.size} files from download` : 'File removed from download', 'success');
+
+  const n = remove.size;
+  toast(n > 1 ? `Deleted ${n} files permanently` : 'File deleted permanently', 'success');
+
+  if (wasActive && wanted.length) {
+    try { await startTorrent(key); } catch {}
+  }
   await poll();
+}
+
+async function confirmFileDeletePermanent() {
+  const pending = pendingFileDelete;
+  pendingFileDelete = null;
+  document.getElementById('file-delete-dialog')?.close();
+  if (!pending) return;
+
+  try {
+    await deleteTorrentFilesPermanently(pending.torrentId, pending.indices);
+  } catch (err) {
+    toast(err?.message || 'Failed to delete files', 'error');
+    await poll();
+  }
 }
 
 function setFileSelectionChecked(torrentId, idx, checked) {
@@ -1452,7 +1569,7 @@ function buildTorrentFilesPanel(t) {
 
   return `<div class="torrent-files-panel" data-tid="${t.id}">
     <div class="torrent-files-toolbar">
-      <span class="torrent-files-toolbar-label">${files.length} file${files.length === 1 ? '' : 's'} · check files, then Start download (Transmission) or Save to device (browser)</span>
+      <span class="torrent-files-toolbar-label">${files.length} file${files.length === 1 ? '' : 's'} · check files, then Start download (Transmission), Save to device (browser), or Delete (permanent)</span>
       <div class="torrent-files-toolbar-actions">
         <button class="torrent-files-edit btn-secondary btn-sm" data-tid="${t.id}" type="button">Edit files</button>
         ${bulkCancelBtn}
@@ -1579,6 +1696,61 @@ function toggleTheme() {
 }
 
 // ── Wishlist ──────────────────────────────────────────────────
+// ── Download history ──────────────────────────────────────────
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+}
+
+function recordHistory(t) {
+  const entries = loadHistory();
+  if (entries.some(e => e.id === t.id)) return;
+  entries.unshift({
+    id:        t.id,
+    name:      t.name,
+    size:      t.sizeWhenDone || t.totalSize || 0,
+    ratio:     t.uploadRatio || 0,
+    completedAt: Date.now(),
+  });
+  if (entries.length > HISTORY_MAX) entries.length = HISTORY_MAX;
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+}
+
+function clearHistory() {
+  localStorage.removeItem(HISTORY_KEY);
+  renderHistoryPanel();
+}
+
+function renderHistoryPanel() {
+  const list  = document.getElementById('history-list');
+  const empty = document.getElementById('history-empty');
+  const count = document.getElementById('history-count');
+  if (!list) return;
+  const entries = loadHistory();
+  if (count) count.textContent = entries.length ? `${entries.length}` : '';
+  if (!entries.length) {
+    list.innerHTML = '';
+    if (empty) empty.hidden = false;
+    return;
+  }
+  if (empty) empty.hidden = true;
+  list.innerHTML = entries.map(e => `
+    <li class="history-item">
+      <div class="history-item-name" title="${escHtml(e.name)}">${escHtml(truncate(e.name, 55))}</div>
+      <div class="history-item-meta">
+        <span>${fmtBytes(e.size)}</span>
+        <span>·</span>
+        <span>ratio ${e.ratio.toFixed(2)}</span>
+        <span>·</span>
+        <span>${fmtDate(Math.floor(e.completedAt / 1000))}</span>
+      </div>
+    </li>`).join('');
+}
+
+function openHistoryDialog() {
+  renderHistoryPanel();
+  document.getElementById('history-dialog')?.showModal();
+}
+
 function loadWishlist() {
   try {
     wishlist = JSON.parse(localStorage.getItem(WISHLIST_KEY) || '[]');
@@ -1873,6 +2045,22 @@ function getCompletedTorrentIds() {
   return getTorrentList()
     .filter(t => (t.percentDone >= 1 || t.status === 6) && (!t.error || t.error === 0))
     .map(t => t.id);
+}
+
+async function pauseSelectedTorrents() {
+  const ids = [...selectedTorrentIds].filter(id => torrents[id] && torrents[id].status !== 0);
+  if (!ids.length) { toast('No active torrents selected', 'info'); return; }
+  await rpc('torrent-stop', { ids });
+  toast(`Paused ${ids.length} torrent${ids.length > 1 ? 's' : ''}`, 'success');
+  await poll();
+}
+
+async function resumeSelectedTorrents() {
+  const ids = [...selectedTorrentIds].filter(id => torrents[id] && torrents[id].status === 0);
+  if (!ids.length) { toast('No paused torrents selected', 'info'); return; }
+  await rpc('torrent-start', { ids });
+  toast(`Resumed ${ids.length} torrent${ids.length > 1 ? 's' : ''}`, 'success');
+  await poll();
 }
 
 async function pauseAllTorrents() {
@@ -2558,12 +2746,17 @@ function setAllTorrentsSelected(selected) {
 function syncSelectionUI() {
   const count = selectedTorrentIds.size;
   const cols = document.getElementById('list-columns');
-  const deleteBtn = document.getElementById('btn-delete-selected');
+  const deleteBtn  = document.getElementById('btn-delete-selected');
+  const pauseBtn   = document.getElementById('btn-pause-selected');
+  const resumeBtn  = document.getElementById('btn-resume-selected');
 
   cols?.classList.toggle('has-selection', count > 0);
-  if (deleteBtn) {
-    deleteBtn.textContent = count > 1 ? `Delete (${count})` : 'Delete';
-  }
+  if (deleteBtn) deleteBtn.textContent = count > 1 ? `Delete (${count})` : 'Delete';
+
+  const activeCount = [...selectedTorrentIds].filter(id => torrents[id] && torrents[id].status !== 0).length;
+  const pausedCount = [...selectedTorrentIds].filter(id => torrents[id] && torrents[id].status === 0).length;
+  if (pauseBtn)  pauseBtn.textContent  = activeCount > 1 ? `Pause (${activeCount})`  : 'Pause';
+  if (resumeBtn) resumeBtn.textContent = pausedCount > 1 ? `Resume (${pausedCount})` : 'Resume';
 }
 
 function syncMainSelectAll() {
@@ -2646,7 +2839,7 @@ function buildRow(t, hasFiles, expanded) {
           <div class="file-size-col">${size}</div>
           <div class="file-date-col">${date}</div>
         </div>
-        <div class="file-meta-line">${statusPill}${err ? ` · <span style="color:var(--danger)">${escHtml(err)}</span>` : ''}${fileHint}</div>
+        <div class="file-meta-line">${statusPill}${err ? ` · <span style="color:var(--danger)">${escHtml(err)}</span>` : ''}${isMov && t.peersConnected > 0 ? ` · <span class="meta-peers">${t.peersSendingToUs || 0}/${t.peersConnected} peers</span>` : ''}${isSeeding && t.uploadRatio >= 0 ? ` · <span class="meta-ratio">ratio ${(t.uploadRatio || 0).toFixed(2)}</span>` : ''}${fileHint}</div>
         ${progressBlock}
       </div>
       ${rowActions}
@@ -2696,6 +2889,14 @@ function smartUpdateRow(groupEl, t) {
   const speedEl = el.querySelector('.progress-speed');
   if (speedEl && newStatus === 'downloading') {
     speedEl.textContent = `↓ ${fmtSpeed(t.rateDownload)} · ↑ ${fmtSpeed(t.rateUpload)}${t.eta > 0 ? ` · ETA ${fmtETA(t.eta)}` : ''}`;
+  }
+  const peersEl = el.querySelector('.meta-peers');
+  if (peersEl && newStatus === 'downloading') {
+    peersEl.textContent = `${t.peersSendingToUs || 0}/${t.peersConnected || 0} peers`;
+  }
+  const ratioEl = el.querySelector('.meta-ratio');
+  if (ratioEl && newStatus === 'complete') {
+    ratioEl.textContent = `ratio ${(t.uploadRatio || 0).toFixed(2)}`;
   }
 }
 
@@ -2813,11 +3014,14 @@ async function poll() {
     }
 
     const nowDone = new Set(list.filter(t => t.percentDone >= 1 && t.status === 6).map(t => t.id));
-    for (const id of nowDone) {
-      if (!prevCompleted.has(id) && torrents[id]) {
-        const name = truncate(torrents[id].name, 40);
-        toast(`Download complete: ${name}`, 'success');
-        maybeNotify(name);
+    if (prevCompleted !== null) {
+      for (const id of nowDone) {
+        if (!prevCompleted.has(id) && torrents[id]) {
+          const name = truncate(torrents[id].name, 40);
+          toast(`Download complete: ${name}`, 'success');
+          maybeNotify(name);
+          recordHistory(torrents[id]);
+        }
       }
     }
     prevCompleted = nowDone;
@@ -3109,7 +3313,7 @@ function setupGrid() {
     const fileDelete = e.target.closest('.torrent-file-delete-btn');
     if (fileDelete) {
       e.stopPropagation();
-      await skipTorrentFiles(+fileDelete.dataset.tid, [+fileDelete.dataset.idx]);
+      showFileDeleteConfirm(+fileDelete.dataset.tid, [+fileDelete.dataset.idx]);
       return;
     }
 
@@ -3117,7 +3321,7 @@ function setupGrid() {
     if (bulkDelete) {
       const tid = +bulkDelete.dataset.tid;
       const indices = [...getFileSelection(tid)];
-      if (indices.length) await skipTorrentFiles(tid, indices);
+      if (indices.length) showFileDeleteConfirm(tid, indices);
       return;
     }
 
@@ -3279,6 +3483,18 @@ function setupRetry() {
   });
 }
 
+function setupHistory() {
+  document.getElementById('btn-history-clear')?.addEventListener('click', () => {
+    clearHistory();
+  });
+  document.getElementById('history-dialog')?.addEventListener('click', e => {
+    const closeBtn = e.target.closest('[data-close="history-dialog"]');
+    if (closeBtn || e.target === document.getElementById('history-dialog')) {
+      document.getElementById('history-dialog').close();
+    }
+  });
+}
+
 function setupSort() {
   document.querySelectorAll('.sort-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3301,6 +3517,8 @@ function setupSelectAll() {
   });
 
   document.getElementById('btn-clear-selection')?.addEventListener('click', clearTorrentSelection);
+  document.getElementById('btn-pause-selected')?.addEventListener('click', pauseSelectedTorrents);
+  document.getElementById('btn-resume-selected')?.addEventListener('click', resumeSelectedTorrents);
   document.getElementById('btn-delete-selected')?.addEventListener('click', showBulkDeleteConfirm);
 
   document.getElementById('file-list')?.addEventListener('change', e => {
@@ -3421,6 +3639,11 @@ function setupMenu() {
     }
   });
 
+  document.getElementById('menu-history')?.addEventListener('click', () => {
+    closeDialog('menu-dialog');
+    openHistoryDialog();
+  });
+
   document.getElementById('menu-settings')?.addEventListener('click', async () => {
     closeDialog('menu-dialog');
     await openSettings();
@@ -3460,6 +3683,14 @@ function setupModals() {
     document.getElementById('delete-dialog')?.close();
   });
   document.getElementById('delete-confirm')?.addEventListener('click', () => confirmDeletePermanent());
+
+  document.getElementById('file-delete-cancel')?.addEventListener('click', () => {
+    pendingFileDelete = null;
+    document.getElementById('file-delete-dialog')?.close();
+  });
+  document.getElementById('file-delete-confirm')?.addEventListener('click', () => {
+    void confirmFileDeletePermanent();
+  });
 
   document.getElementById('clear-completed-cancel')?.addEventListener('click', () => {
     document.getElementById('clear-completed-dialog')?.close();
@@ -3538,6 +3769,7 @@ function init() {
   setupQueuePanel();
   setupModals();
   setupRetry();
+  setupHistory();
 
   showView('empty');
   document.getElementById('app')?.classList.add('ready');
