@@ -10,7 +10,6 @@ RestartSec=5
 User=www-data
 Group=www-data
 EnvironmentFile=-/etc/cloudseed/updater.env
-NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]

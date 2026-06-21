@@ -106,8 +106,10 @@ Find and set these values (leave everything else as-is):
 ### Set permissions and start
 
 ```bash
+sudo mkdir -p /var/lib/transmission-daemon/downloads/.incomplete
 sudo chown -R debian-transmission:debian-transmission /var/lib/transmission-daemon/downloads
 sudo chmod 775 /var/lib/transmission-daemon/downloads
+sudo chmod 775 /var/lib/transmission-daemon/downloads/.incomplete
 
 sudo systemctl enable transmission-daemon
 sudo systemctl start transmission-daemon
@@ -483,7 +485,7 @@ You want HTML starting with `<!DOCTYPE` or `<html` — not `401 Unauthorized`.
 
 **In the browser:**
 
-- Use username **`admin`** exactly (case-sensitive), unless you chose a different name in `htpasswd`.
+- Use username `**admin`** exactly (case-sensitive), unless you chose a different name in `htpasswd`.
 - This is **not** your Ubuntu SSH password.
 - Try a **private/incognito** window so old wrong passwords are not cached.
 - If it still loops, click **Cancel**, close the tab, open a new tab, and try again.
@@ -533,6 +535,75 @@ Test with GET (not `curl -I`):
 ```bash
 curl -s -u admin:YOUR_PASSWORD http://127.0.0.1/transmission/web/ | head -5
 ```
+
+### Torrent error: Permission denied on `.incomplete`
+
+Example: `Couldn't get '/var/lib/transmission-daemon/.incomplete/...' Permission denied (13)`
+
+Transmission runs as `debian-transmission` and must own the download and incomplete folders.
+
+```bash
+sudo systemctl stop transmission-daemon
+
+# Create both possible incomplete locations
+sudo mkdir -p /var/lib/transmission-daemon/downloads/.incomplete
+sudo mkdir -p /var/lib/transmission-daemon/.incomplete
+
+# Fix ownership
+sudo chown -R debian-transmission:debian-transmission /var/lib/transmission-daemon/downloads
+sudo chown -R debian-transmission:debian-transmission /var/lib/transmission-daemon/.incomplete
+sudo chmod -R 775 /var/lib/transmission-daemon/downloads
+sudo chmod 775 /var/lib/transmission-daemon/.incomplete
+
+# Align settings (stop daemon before editing)
+sudo nano /etc/transmission-daemon/settings.json
+```
+
+Set:
+
+```json
+"download-dir": "/var/lib/transmission-daemon/downloads",
+"incomplete-dir": "/var/lib/transmission-daemon/downloads/.incomplete",
+"incomplete-dir-enabled": true,
+```
+
+```bash
+sudo systemctl start transmission-daemon
+```
+
+Remove the broken torrent in the UI, then add it again. Or resume after fixing permissions.
+
+Verify Transmission can write:
+
+```bash
+sudo -u debian-transmission touch /var/lib/transmission-daemon/downloads/.incomplete/test-write
+sudo -u debian-transmission rm /var/lib/transmission-daemon/downloads/.incomplete/test-write
+```
+
+### "No data found" / remove torrent and re-add
+
+Transmission still has the torrent in its database, but **no files exist on disk** (common after a failed download or permission error).
+
+**In CloudSeed:** delete the torrent (enable **delete local data** if offered), then add the magnet again and start.
+
+**On the VPS**, clean partial leftovers and confirm the download path:
+
+```bash
+# See what Transmission is configured to use
+grep -E 'download-dir|incomplete-dir' /etc/transmission-daemon/settings.json
+
+# List partial downloads (folder names vary)
+sudo ls -la /var/lib/transmission-daemon/downloads/
+sudo ls -la /var/lib/transmission-daemon/.incomplete/ 2>/dev/null || true
+
+# Optional: remove stale partial folder for that torrent (replace folder name)
+# sudo rm -rf "/var/lib/transmission-daemon/downloads/.incomplete/From.S04E07.1080p.x265-ELITE"
+# sudo rm -rf "/var/lib/transmission-daemon/.incomplete/From.S04E07.1080p.x265-ELITE"
+
+sudo systemctl restart transmission-daemon
+```
+
+Then re-add the torrent in the UI. A fresh add after permissions are fixed should download normally.
 
 ### Green dot is red / "Disconnected"
 
@@ -630,6 +701,10 @@ Repo: **[https://github.com/lakmina456/transmission-torrent-client](https://gith
 
 If you followed **Step 5**, the repo is already at `/opt/cloudseed/src` — skip to **11b**.
 
+> **`fatal: destination path already exists`** — the clone is already there; do **not** clone again. Use `sudo git -C /opt/cloudseed/src pull origin develop` if you need the latest files before Step 11b.
+
+> **`dubious ownership`** when running `git` as `ubuntu` — the repo was cloned with `sudo` (owned by root). Use `sudo git -C /opt/cloudseed/src …` for manual git commands, or run once: `git config --global --add safe.directory /opt/cloudseed/src`.
+
 Otherwise clone it now:
 
 **Option A — HTTPS (simplest; repo is public)**
@@ -663,14 +738,16 @@ sudo mkdir -p /opt/cloudseed
 sudo git clone -b develop git@github-cloudseed:lakmina456/transmission-torrent-client.git /opt/cloudseed/src
 ```
 
-Set the branch the updater tracks (must match what you cloned):
+Set the branch the updater tracks (must match what you cloned). Create `/etc/cloudseed` first — `cp` fails if the directory does not exist:
 
 ```bash
+sudo mkdir -p /etc/cloudseed
 sudo cp /opt/cloudseed/src/server/deploy.env.example /etc/cloudseed/deploy.env
-sudo nano /etc/cloudseed/deploy.env
-# Set: CLOUDSEED_BRANCH=develop
+echo 'CLOUDSEED_BRANCH=develop' | sudo tee -a /etc/cloudseed/deploy.env
 sudo chmod 600 /etc/cloudseed/deploy.env
 ```
+
+> `deploy.sh` defaults to branch **`main`** if `CLOUDSEED_BRANCH` is unset — set **`develop`** here (or whatever branch you push to on GitHub).
 
 ### 11b — Install deploy + updater scripts
 
@@ -723,6 +800,8 @@ sudo visudo -c
 
 ### 11e — Updater systemd service
 
+The updater runs as `www-data` and calls `sudo /opt/cloudseed/deploy.sh`. Do **not** set `NoNewPrivileges=true` on this unit — it blocks sudo and breaks **Check for updates** (Remote status **UNAVAILABLE**).
+
 ```bash
 sudo cp /opt/cloudseed/src/server/cloudseed-updater.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -732,17 +811,23 @@ sudo systemctl status cloudseed-updater
 
 curl -s http://127.0.0.1:5002/health
 # Expected: {"status":"ok","service":"cloudseed-updater","updateConfigured":true}
+
+curl -s http://127.0.0.1:5002/api/update/check
+# Expected: JSON with current, remote, branch — not a sudo error
+```
+
+**Already deployed with an older unit file?** Remove the blocking line, then restart:
+
+```bash
+sudo sed -i '/NoNewPrivileges=true/d' /etc/systemd/system/cloudseed-updater.service
+sudo systemctl daemon-reload
+sudo systemctl restart cloudseed-updater
+systemctl show cloudseed-updater -p NoNewPrivileges   # should show: NoNewPrivileges=no
 ```
 
 ### 11f — First deploy + nginx reload
 
-If you cloned the `develop` branch in Step 5, set the branch before the first automated deploy:
-
-```bash
-sudo cp /opt/cloudseed/src/server/deploy.env.example /etc/cloudseed/deploy.env
-echo 'CLOUDSEED_BRANCH=develop' | sudo tee -a /etc/cloudseed/deploy.env
-sudo chmod 600 /etc/cloudseed/deploy.env
-```
+If you did not set `/etc/cloudseed/deploy.env` in **11a**, do it now (see **11a** for `CLOUDSEED_BRANCH=develop`).
 
 Then deploy:
 
@@ -762,6 +847,25 @@ sudo nginx -t && sudo systemctl reload nginx
 **Security layers:** nginx basic auth (whole site) + `X-Update-Token` header (deploy only) + sudoers limited to `/opt/cloudseed/deploy.sh`.
 
 **Local dev:** the Updates tab shows “service unavailable” — expected without the updater on `:5002`.
+
+**Manual deploy (no UI):** `sudo /opt/cloudseed/deploy.sh` — works even when the updater service is misconfigured.
+
+### Updates: Remote status UNAVAILABLE (sudo / no new privileges)
+
+UI or `curl` shows:
+
+```text
+sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+```
+
+**Cause:** `cloudseed-updater` has `NoNewPrivileges=true` in its systemd unit (see **11e** fix).
+
+**Also verify sudoers:**
+
+```bash
+sudo cat /etc/sudoers.d/cloudseed-updater
+sudo -u www-data sudo -n /opt/cloudseed/deploy.sh check
+```
 
 ---
 
