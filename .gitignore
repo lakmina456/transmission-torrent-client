@@ -39,3 +39,4 @@ CMakeUserPresets.json
 # CloudSeed VPS secrets (never commit)
 server/updater.env
 server/deploy.env
+updater.env
