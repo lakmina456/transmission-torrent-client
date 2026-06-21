@@ -4,15 +4,18 @@ dev-proxy.py — local development proxy for CloudSeed
 - Proxies POST /rpc to Transmission
 - Serves GET /downloads/* directly from Transmission's download directory
 - Handles POST /delete for permanent file removal (local dev)
+- Streams GET /zip?path=FolderName as a ZIP archive (local dev)
 - Handles Range requests so IDM / partial downloads work
 
 Usage:  python dev-proxy.py
 Then open: http://localhost:8080
 """
 import http.server
+import io
 import json
 import mimetypes
 import os
+import zipfile
 from http import HTTPStatus
 import shutil
 import urllib.error
@@ -152,6 +155,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/downloads/'):
             self._serve_download()
+        elif self.path == '/zip' or self.path.startswith('/zip?'):
+            self._serve_zip()
         elif self.path.startswith('/.well-known/'):
             # Chrome DevTools probes this path; no file exists in static root
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -215,6 +220,67 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                     remaining -= len(chunk)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass   # client cancelled the download — normal
+
+    def _serve_zip(self):
+        dl_dir = get_download_dir()
+        if not dl_dir:
+            self.send_error(503, 'Download directory not available (Transmission not connected?)')
+            return
+
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        rel = (qs.get('path', [''])[0] or '').strip()
+        if not rel:
+            self.send_error(400, 'Missing path parameter')
+            return
+
+        full = safe_join(dl_dir, rel)
+        if full is None:
+            self.send_error(403, 'Path traversal blocked')
+            return
+        if not os.path.isdir(full):
+            self.send_error(404, f'Folder not found: {rel}')
+            return
+
+        zip_name = f'{os.path.basename(full.rstrip("/\\"))}.zip'
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/zip')
+        self.send_header('Content-Disposition', f'attachment; filename="{zip_name}"')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.end_headers()
+
+        try:
+            self._stream_zip(full)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
+    def _stream_zip(self, folder):
+        buf = io.BytesIO()
+        sent = 0
+
+        def flush_new():
+            nonlocal sent
+            buf.seek(0, io.SEEK_END)
+            end = buf.tell()
+            if end <= sent:
+                return b''
+            buf.seek(sent)
+            data = buf.read(end - sent)
+            sent = end
+            return data
+
+        with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for root, _dirs, files in os.walk(folder):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    arcname = os.path.relpath(fpath, os.path.dirname(folder))
+                    zf.write(fpath, arcname)
+                    chunk = flush_new()
+                    if chunk:
+                        self.wfile.write(chunk)
+
+        tail = flush_new()
+        if tail:
+            self.wfile.write(tail)
 
     # ── POST /rpc → proxy to Transmission; POST /delete → remove files ───
     def do_POST(self):
@@ -301,7 +367,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             text = str(arg)
             if len(text) == 3 and text.isdigit():
                 code = text
-        if '/rpc' in path or '/downloads/' in path or '/delete' in path or code.startswith(('4', '5')):
+        if '/rpc' in path or '/downloads/' in path or '/zip' in path or '/delete' in path or code.startswith(('4', '5')):
             super().log_message(fmt, *args)
 
 
@@ -310,6 +376,7 @@ if __name__ == '__main__':
     print(f'CloudSeed dev server -> http://localhost:{PORT}')
     print(f'Proxying RPC  ->  {TRANSMISSION_RPC}')
     print(f'Serving files ->  {STATIC_ROOT}')
+    print('ZIP route     ->  GET /zip?path=FolderName')
     print('Press Ctrl+C to stop.\n')
     with http.server.ThreadingHTTPServer(('', PORT), ProxyHandler) as httpd:
         try:

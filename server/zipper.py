@@ -76,22 +76,32 @@ def remove_download_path(rel):
 
 
 def stream_zip(folder):
-    """Generator: yield ZIP bytes in chunks."""
+    """Generator: yield only new ZIP bytes as each file is added."""
     buf = io.BytesIO()
+    sent = 0
+
+    def flush_new():
+        nonlocal sent
+        buf.seek(0, io.SEEK_END)
+        end = buf.tell()
+        if end <= sent:
+            return b''
+        buf.seek(sent)
+        data = buf.read(end - sent)
+        sent = end
+        return data
+
     with zipfile.ZipFile(buf, mode='w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
         for root, _dirs, files in os.walk(folder):
             for fname in files:
                 full = os.path.join(root, fname)
                 arcname = os.path.relpath(full, os.path.dirname(folder))
                 zf.write(full, arcname)
-                buf.seek(0)
-                chunk = buf.read()
+                chunk = flush_new()
                 if chunk:
                     yield chunk
-                buf.seek(0)
-                buf.truncate()
-    buf.seek(0)
-    tail = buf.read()
+
+    tail = flush_new()  # central directory written on close
     if tail:
         yield tail
 

@@ -3378,6 +3378,223 @@ body.graph-resizing {
   }
 }
 
+/* Expand tabs (Files / Peers & Trackers) */
+
+.expand-tabs-wrap {
+  background: var(--bg-inset);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.expand-tabs-nav {
+  display: flex;
+  gap: 0;
+  padding: 0 var(--page-pad);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.expand-tab-btn {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--transition), border-color var(--transition);
+}
+.expand-tab-btn:hover { color: var(--text-primary); }
+.expand-tab-btn.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.expand-tab-pane > .torrent-files-panel {
+  border-top: none;
+}
+
+/* Peers & Trackers panel */
+
+.peers-panel {
+  padding: 12px var(--page-pad) 16px calc(var(--page-pad) + 88px);
+}
+
+.peers-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.peers-section { margin-bottom: 16px; }
+.peers-section:last-of-type { margin-bottom: 0; }
+
+.peers-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.peers-section-count {
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.peers-table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.peers-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.peers-table thead tr {
+  background: var(--bg-hover);
+}
+
+.peers-table th {
+  padding: 5px 10px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.peers-table td {
+  padding: 5px 10px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.peers-table tbody tr:hover td { background: var(--bg-hover); }
+
+.peer-addr    { font-family: monospace; font-size: 11px; color: var(--text-primary); }
+.peer-client  { color: var(--text-primary); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.peer-flags   { font-family: monospace; font-size: 10px; }
+.peer-speed   { text-align: right; }
+.peer-pct     { text-align: right; }
+.tracker-host { max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); }
+.tracker-seeds, .tracker-leeches { text-align: right; }
+.tracker-state { font-weight: 500; }
+.tracker-ok   { color: var(--success, #16a34a); }
+.tracker-err  { color: var(--danger); }
+.tracker-next { text-align: right; color: var(--text-muted); }
+.peers-empty-cell { text-align: center; color: var(--text-muted); padding: 12px; }
+
+.peers-footer {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* RSS dialog */
+
+.rss-dialog { width: min(560px, calc(100vw - 32px)); }
+.rss-panel  { display: flex; flex-direction: column; max-height: min(680px, calc(100vh - 48px)); }
+
+.rss-add-form {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rss-add-form .settings-field { margin-bottom: 8px; }
+.settings-optional { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+
+.rss-feed-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 20px 8px;
+}
+
+.rss-feed-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.rss-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 0;
+  gap: 4px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.rss-empty p { font-size: 13px; font-weight: 500; color: var(--text-secondary); margin: 0; }
+.rss-empty span { font-size: 12px; }
+
+.rss-feed-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+
+.rss-feed-item {
+  position: relative;
+  padding: 10px 36px 10px 12px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+.rss-feed-item:hover { background: var(--bg-hover); }
+
+.rss-feed-url {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.rss-feed-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rss-feed-filter { color: var(--accent); }
+.rss-feed-error  { color: var(--danger); }
+
+.rss-feed-remove {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--transition), background var(--transition), color var(--transition);
+}
+.rss-feed-item:hover .rss-feed-remove { opacity: 1; }
+.rss-feed-remove:hover { background: var(--danger-soft); color: var(--danger); }
+.rss-feed-remove svg { width: 14px; height: 14px; }
+
 /* History dialog */
 
 .history-dialog { width: min(560px, calc(100vw - 32px)); }
@@ -3827,7 +4044,22 @@ body.graph-resizing {
   animation: spin 0.7s linear infinite;
 }
 
-/* Toast — top-right notifications */
+/* Toast — top-right notifications (toast-layer keeps toasts above modal dialogs) */
+
+.toast-layer {
+  border: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  overflow: visible;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+}
+
+.toast-layer::backdrop {
+  display: none;
+}
 
 #toast-container {
   position: fixed;
@@ -4155,6 +4387,7 @@ body.graph-resizing {
   }
 
   .torrent-files-panel { padding-left: max(14px, var(--page-pad)); }
+  .peers-panel { padding-left: max(14px, var(--page-pad)); }
   .row-actions { opacity: 1; }
 }
 

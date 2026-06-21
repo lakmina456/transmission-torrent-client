@@ -24,6 +24,9 @@ const WISHLIST_KEY  = 'cloudseed-wishlist';
 const THEME_KEY     = 'cloudseed-theme';
 const HISTORY_KEY   = 'cloudseed-history';
 const HISTORY_MAX   = 200;
+const RSS_KEY       = 'cloudseed-rss-feeds';
+const RSS_SEEN_KEY  = 'cloudseed-rss-seen';
+const RSS_POLL_MS   = 10 * 60 * 1000;
 
 const FILTER_OPTIONS = [
   { key: 'all',         label: 'All' },
@@ -34,6 +37,7 @@ const FILTER_OPTIONS = [
 ];
 
 let pollTimer     = null;
+let rssTimer      = null;
 let sessionId     = sessionStorage.getItem('tr-session-id') || '';
 let torrents      = {};
 let currentFilter = 'all';
@@ -45,7 +49,8 @@ let prevCompleted = null;
 let pendingDeleteIds = null;
 let pendingFileDelete = null;
 let wishlist      = [];
-let expandedTorrents = new Set();
+let expandedTorrents  = new Set();
+let expandedTab       = new Map(); // torrent id -> 'files' | 'peers'
 let fileSelections   = new Map();
 let localFileReadyCache = new Map();
 let localFileDownloads = new Map();
@@ -1593,13 +1598,135 @@ function buildTorrentFilesPanel(t) {
   </div>`;
 }
 
+// ── Peer / Tracker panel ──────────────────────────────────────
+async function fetchPeersAndTrackers(id) {
+  const data = await rpc('torrent-get', {
+    ids: [+id],
+    fields: ['id', 'peers', 'trackerStats'],
+  });
+  return data?.arguments?.torrents?.[0] || null;
+}
+
+function buildPeersPanel(id, detail) {
+  if (!detail) return `<div class="peers-panel" data-tid="${id}"><div class="peers-loading"><div class="spinner sm"></div><span>Loading…</span></div></div>`;
+
+  const peers    = detail.peers || [];
+  const trackers = detail.trackerStats || [];
+
+  const peerRows = peers.length
+    ? peers.map(p => {
+        const flags  = escHtml(p.flagStr || '');
+        const client = escHtml(truncate(p.clientName || 'Unknown', 30));
+        const addr   = escHtml(p.address || '');
+        const dl = fmtSpeed(p.rateToClient || 0);
+        const ul = fmtSpeed(p.rateToPeer   || 0);
+        const pct = Math.round((p.progress || 0) * 100);
+        return `<tr>
+          <td class="peer-addr">${addr}</td>
+          <td class="peer-client">${client}</td>
+          <td class="peer-flags" title="Flags">${flags}</td>
+          <td class="peer-speed">↓ ${dl}</td>
+          <td class="peer-speed">↑ ${ul}</td>
+          <td class="peer-pct">${pct}%</td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="6" class="peers-empty-cell">No peers connected</td></tr>`;
+
+  const trackerRows = trackers.length
+    ? trackers.map(tr => {
+        const host   = escHtml(tr.host || tr.announce || '');
+        const seeds  = tr.seederCount >= 0 ? tr.seederCount : '–';
+        const leeches= tr.leecherCount >= 0 ? tr.leecherCount : '–';
+        const state  = escHtml(tr.announceState === 2 ? 'Waiting' : tr.announceState === 3 ? 'Queued' : tr.lastAnnounceSucceeded ? 'OK' : tr.lastAnnounceResult || 'Unknown');
+        const nextAnn = tr.nextAnnounceTime > 0 ? fmtETA(tr.nextAnnounceTime - Math.floor(Date.now() / 1000)) : '–';
+        const stateCls = tr.lastAnnounceSucceeded ? 'tracker-ok' : 'tracker-err';
+        return `<tr>
+          <td class="tracker-host">${host}</td>
+          <td class="tracker-seeds">${seeds}</td>
+          <td class="tracker-leeches">${leeches}</td>
+          <td class="tracker-state ${stateCls}">${state}</td>
+          <td class="tracker-next">${nextAnn}</td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="5" class="peers-empty-cell">No trackers</td></tr>`;
+
+  return `<div class="peers-panel" data-tid="${id}">
+    <div class="peers-section">
+      <div class="peers-section-title">Peers <span class="peers-section-count">${peers.length}</span></div>
+      <div class="peers-table-wrap">
+        <table class="peers-table">
+          <thead><tr>
+            <th>Address</th><th>Client</th><th>Flags</th><th>Down</th><th>Up</th><th>Have</th>
+          </tr></thead>
+          <tbody>${peerRows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="peers-section">
+      <div class="peers-section-title">Trackers <span class="peers-section-count">${trackers.length}</span></div>
+      <div class="peers-table-wrap">
+        <table class="peers-table">
+          <thead><tr>
+            <th>Host</th><th>Seeds</th><th>Leeches</th><th>Status</th><th>Next announce</th>
+          </tr></thead>
+          <tbody>${trackerRows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="peers-footer">
+      <button class="btn-secondary btn-sm peers-refresh-btn" data-tid="${id}" type="button">Refresh</button>
+    </div>
+  </div>`;
+}
+
+function buildExpandTabs(t, activeTab) {
+  const hasFiles = torrentHasFileList(t);
+  const tab = activeTab || 'files';
+  return `<div class="expand-tabs-wrap" data-tid="${t.id}">
+    <div class="expand-tabs-nav">
+      <button class="expand-tab-btn${tab === 'files' ? ' active' : ''}" data-tid="${t.id}" data-tab="files" type="button">Files</button>
+      <button class="expand-tab-btn${tab === 'peers' ? ' active' : ''}" data-tid="${t.id}" data-tab="peers" type="button">Peers &amp; Trackers</button>
+    </div>
+    <div class="expand-tab-pane" data-tab-pane="files" ${tab !== 'files' ? 'hidden' : ''}>
+      ${hasFiles ? buildTorrentFilesPanel(t) : '<p class="peers-empty-cell">No file list yet</p>'}
+    </div>
+    <div class="expand-tab-pane" data-tab-pane="peers" ${tab !== 'peers' ? 'hidden' : ''}>
+      ${buildPeersPanel(t.id, null)}
+    </div>
+  </div>`;
+}
+
+async function loadPeersPane(groupEl, id) {
+  const pane = groupEl.querySelector('[data-tab-pane="peers"]');
+  if (!pane) return;
+  const existing = pane.querySelector('.peers-panel');
+  if (existing && !existing.querySelector('.peers-loading')) return; // already loaded
+  const detail = await fetchPeersAndTrackers(id).catch(() => null);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = buildPeersPanel(id, detail);
+  pane.innerHTML = '';
+  pane.appendChild(tmp.firstElementChild);
+}
+
+function switchExpandTab(groupEl, id, tab) {
+  expandedTab.set(+id, tab);
+  groupEl.querySelectorAll('.expand-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  groupEl.querySelectorAll('[data-tab-pane]').forEach(p => { p.hidden = p.dataset.tabPane !== tab; });
+  if (tab === 'peers') void loadPeersPane(groupEl, id);
+}
+
 function toggleTorrentExpand(id) {
   const key = +id;
   const t = torrents[key];
-  if (!t || !torrentHasFileList(t)) return;
+  if (!t) return;
 
-  if (expandedTorrents.has(key)) expandedTorrents.delete(key);
-  else expandedTorrents.add(key);
+  if (expandedTorrents.has(key)) {
+    expandedTorrents.delete(key);
+    expandedTab.delete(key);
+  } else {
+    expandedTorrents.add(key);
+    if (!expandedTab.has(key)) expandedTab.set(key, 'files');
+  }
 
   const groupEl = document.querySelector(`[data-group-id="${key}"]`);
   if (groupEl) {
@@ -1616,24 +1743,34 @@ function syncTorrentRowExpand(groupEl, t) {
   const btn = groupEl.querySelector('.row-expand-btn');
   if (btn) {
     btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    btn.title = expanded ? 'Hide files' : 'Show files';
+    btn.title = expanded ? 'Collapse' : 'Expand';
   }
 
-  const panel = groupEl.querySelector('.torrent-files-panel');
-  if (expanded && !panel) {
+  const existing = groupEl.querySelector('.expand-tabs-wrap');
+  if (expanded && !existing) {
+    const tab = expandedTab.get(t.id) || 'files';
     const tmp = document.createElement('div');
-    tmp.innerHTML = buildTorrentFilesPanel(t);
+    tmp.innerHTML = buildExpandTabs(t, tab);
     groupEl.appendChild(tmp.firstElementChild);
     syncTorrentFileSelectAll(t.id);
     void probeTorrentFilesLocal(t.id);
-  } else if (!expanded && panel) {
-    panel.remove();
+    if (tab === 'peers') void loadPeersPane(groupEl, t.id);
+  } else if (!expanded && existing) {
+    existing.remove();
   }
 }
 
 function torrentIsFolder(t) {
   if (!t.files || t.files.length === 0) return false;
   return t.files.length > 1 || t.files[0].name.includes('/');
+}
+
+/** On-disk folder name under the download root (may differ from display name). */
+function torrentDiskPath(t) {
+  if (!t.files?.length) return t.name;
+  const first = t.files[0].name;
+  if (first.includes('/')) return first.split('/')[0];
+  return t.name;
 }
 
 function torrentCategory(t) {
@@ -1646,7 +1783,7 @@ function buildDownloadTarget(t, file = null) {
   const isFolder = torrentIsFolder(t);
   if (file === null) {
     if (isFolder) {
-      const p = encodeURIComponent(t.name);
+      const p = encodeURIComponent(torrentDiskPath(t));
       return { url: `${ZIP_BASE}?path=${p}`, isZip: true, filename: `${t.name}.zip` };
     }
     const name = t.files[0].name;
@@ -1696,6 +1833,178 @@ function toggleTheme() {
 }
 
 // ── Wishlist ──────────────────────────────────────────────────
+// ── RSS feeds ─────────────────────────────────────────────────
+function loadRssFeeds() {
+  try { return JSON.parse(localStorage.getItem(RSS_KEY) || '[]'); } catch { return []; }
+}
+
+function saveRssFeeds(feeds) {
+  localStorage.setItem(RSS_KEY, JSON.stringify(feeds));
+}
+
+function loadRssSeen() {
+  try { return new Set(JSON.parse(localStorage.getItem(RSS_SEEN_KEY) || '[]')); } catch { return new Set(); }
+}
+
+function saveRssSeen(seen) {
+  // keep at most 2000 entries to prevent unbounded growth
+  const arr = [...seen].slice(-2000);
+  localStorage.setItem(RSS_SEEN_KEY, JSON.stringify(arr));
+}
+
+function rssAddFeed(url, filter) {
+  const u = (url || '').trim();
+  if (!u) { toast('Enter a feed URL', 'info'); return; }
+  const feeds = loadRssFeeds();
+  if (feeds.some(f => f.url === u)) { toast('Feed already added', 'info'); return; }
+  feeds.push({ id: Date.now().toString(36), url: u, filter: (filter || '').trim(), addedAt: Date.now(), lastChecked: null, lastError: null });
+  saveRssFeeds(feeds);
+  renderRssFeeds();
+  toast('RSS feed added', 'success');
+  void rssPollAll();
+}
+
+function rssRemoveFeed(id) {
+  const feeds = loadRssFeeds().filter(f => f.id !== id);
+  saveRssFeeds(feeds);
+  renderRssFeeds();
+}
+
+async function rssPollAll() {
+  const feeds = loadRssFeeds();
+  if (!feeds.length || !isConnected) return;
+  const seen = loadRssSeen();
+  let changed = false;
+
+  for (const feed of feeds) {
+    try {
+      // Use a CORS proxy path only if same-origin; for VPS use this consumes a fetch via the backend
+      // We proxy through /api/rss-proxy?url=... if available, otherwise direct fetch
+      const proxyUrl = `${UPDATE_API}/rss-proxy?url=${encodeURIComponent(feed.url)}`;
+      let text;
+      try {
+        const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        text = await res.text();
+      } catch {
+        // fallback: direct fetch (works if CORS allows or same origin)
+        const res = await fetch(feed.url, { signal: AbortSignal.timeout(15000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        text = await res.text();
+      }
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, 'application/xml');
+      const items = [...doc.querySelectorAll('item')];
+      const filterRx = feed.filter ? new RegExp(feed.filter, 'i') : null;
+
+      for (const item of items) {
+        const link = item.querySelector('enclosure')?.getAttribute('url')
+          || item.querySelector('link')?.textContent?.trim()
+          || '';
+        const title = item.querySelector('title')?.textContent?.trim() || link;
+        const guid  = item.querySelector('guid')?.textContent?.trim() || link;
+
+        if (!link || seen.has(guid)) continue;
+        if (filterRx && !filterRx.test(title)) continue;
+        if (!link.startsWith('magnet:') && !link.match(/\.torrent(\?|$)/i)) continue;
+
+        seen.add(guid);
+        changed = true;
+        try {
+          await rpc('torrent-add', { filename: link, paused: false });
+          toast(`RSS: added "${truncate(title, 45)}"`, 'success');
+        } catch (e) {
+          toast(`RSS: failed to add "${truncate(title, 35)}"`, 'error');
+        }
+      }
+
+      feed.lastChecked = Date.now();
+      feed.lastError = null;
+    } catch (e) {
+      feed.lastError = e.message || 'Fetch failed';
+    }
+  }
+
+  saveRssFeeds(feeds);
+  if (changed) saveRssSeen(seen);
+  renderRssFeeds();
+}
+
+function startRssPolling() {
+  if (rssTimer) clearInterval(rssTimer);
+  rssTimer = setInterval(rssPollAll, RSS_POLL_MS);
+  void rssPollAll();
+}
+
+function renderRssFeeds() {
+  const list  = document.getElementById('rss-feed-list');
+  const empty = document.getElementById('rss-empty');
+  if (!list) return;
+  const feeds = loadRssFeeds();
+  if (!feeds.length) {
+    list.innerHTML = '';
+    if (empty) empty.hidden = false;
+    return;
+  }
+  if (empty) empty.hidden = true;
+  list.innerHTML = feeds.map(f => {
+    const checked = f.lastChecked ? `Checked ${fmtDate(Math.floor(f.lastChecked / 1000))}` : 'Not yet checked';
+    const errHtml = f.lastError ? `<span class="rss-feed-error">${escHtml(f.lastError)}</span>` : '';
+    const filterHtml = f.filter ? `<span class="rss-feed-filter">filter: ${escHtml(f.filter)}</span>` : '';
+    return `<li class="rss-feed-item" data-fid="${f.id}">
+      <div class="rss-feed-url" title="${escHtml(f.url)}">${escHtml(truncate(f.url, 55))}</div>
+      <div class="rss-feed-meta">${checked}${filterHtml ? ' · ' + filterHtml : ''}${errHtml ? ' · ' + errHtml : ''}</div>
+      <button class="rss-feed-remove" data-fid="${f.id}" type="button" aria-label="Remove feed">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </li>`;
+  }).join('');
+}
+
+function openRssDialog() {
+  renderRssFeeds();
+  document.getElementById('rss-dialog')?.showModal();
+}
+
+function setupRss() {
+  const urlInput    = document.getElementById('rss-url-input');
+  const filterInput = document.getElementById('rss-filter-input');
+  const addBtn      = document.getElementById('rss-add-btn');
+  const pollBtn     = document.getElementById('rss-poll-btn');
+  const dlg         = document.getElementById('rss-dialog');
+
+  addBtn?.addEventListener('click', () => {
+    rssAddFeed(urlInput?.value, filterInput?.value);
+    if (urlInput) urlInput.value = '';
+    if (filterInput) filterInput.value = '';
+  });
+
+  urlInput?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      rssAddFeed(urlInput.value, filterInput?.value);
+      urlInput.value = '';
+      if (filterInput) filterInput.value = '';
+    }
+  });
+
+  pollBtn?.addEventListener('click', async () => {
+    if (pollBtn) { pollBtn.disabled = true; pollBtn.textContent = 'Checking…'; }
+    await rssPollAll();
+    if (pollBtn) { pollBtn.disabled = false; pollBtn.textContent = 'Check now'; }
+  });
+
+  document.getElementById('rss-feed-list')?.addEventListener('click', e => {
+    const rm = e.target.closest('.rss-feed-remove');
+    if (rm) rssRemoveFeed(rm.dataset.fid);
+  });
+
+  dlg?.addEventListener('click', e => {
+    const closeBtn = e.target.closest('[data-close="rss-dialog"]');
+    if (closeBtn || e.target === dlg) dlg.close();
+  });
+}
+
 // ── Download history ──────────────────────────────────────────
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
@@ -1961,6 +2270,7 @@ async function connectToDaemon() {
     const ok = await poll();
     if (!ok) throw new Error('offline');
     startPolling();
+    startRssPolling();
   } catch {
     hideStatusBanner();
     setConnected(false);
@@ -2802,11 +3112,9 @@ function buildRow(t, hasFiles, expanded) {
     ${isMov || isChk ? '<span class="status-dot"></span>' : ''}${si.label}
   </span>`;
 
-  const expandSlot = hasFiles
-    ? `<div class="row-expand-slot">
-        <button class="row-expand-btn" data-id="${t.id}" type="button" title="${expanded ? 'Hide files' : 'Show files'}" aria-expanded="${expanded ? 'true' : 'false'}">${ICON.chevron}</button>
-      </div>`
-    : '';
+  const expandSlot = `<div class="row-expand-slot">
+      <button class="row-expand-btn" data-id="${t.id}" type="button" title="${expanded ? 'Collapse' : 'Expand'}" aria-expanded="${expanded ? 'true' : 'false'}">${ICON.chevron}</button>
+    </div>`;
 
   const fileHint = hasFiles
     ? ` · <span class="file-count-hint">${t.files.length} file${t.files.length === 1 ? '' : 's'}</span>`
@@ -2823,7 +3131,7 @@ function buildRow(t, hasFiles, expanded) {
       ${done ? `<button class="row-btn row-btn-dl btn-dl-http" data-id="${t.id}" title="Download" aria-label="Download">${ICON.download}</button>` : ''}
     </div>`;
 
-  return `<div class="file-row${showProgress ? ' has-progress' : ''}${hasFiles ? '' : ' no-expand'}${rowSelected ? ' selected' : ''}" data-id="${t.id}" data-status="${si.cls}" role="listitem">
+  return `<div class="file-row${showProgress ? ' has-progress' : ''}${rowSelected ? ' selected' : ''}" data-id="${t.id}" data-status="${si.cls}" role="listitem">
     <label class="row-check">
       <input type="checkbox" class="row-checkbox row-select" data-id="${t.id}" ${rowSelected ? 'checked' : ''} />
       <span class="checkmark"></span>
@@ -2850,10 +3158,11 @@ function buildRow(t, hasFiles, expanded) {
 function buildRowGroup(t) {
   const hasFiles = torrentHasFileList(t);
   const expanded = expandedTorrents.has(t.id);
+  const tab = expandedTab.get(t.id) || 'files';
   const rowSelected = isTorrentRowSelected(t.id);
   return `<div class="file-row-group${expanded ? ' expanded' : ''}${rowSelected ? ' selected' : ''}" data-group-id="${t.id}">
     ${buildRow(t, hasFiles, expanded)}
-    ${hasFiles && expanded ? buildTorrentFilesPanel(t) : ''}
+    ${expanded ? buildExpandTabs(t, tab) : ''}
   </div>`;
 }
 
@@ -2861,25 +3170,29 @@ function smartUpdateRow(groupEl, t) {
   const el = groupEl.querySelector('.file-row') || groupEl;
   const pct = Math.round((t.percentDone || 0) * 100);
   const newStatus = getStatus(t).cls;
-  const hasFiles = torrentHasFileList(t);
   const expanded = expandedTorrents.has(t.id);
-  const panel = groupEl.querySelector('.torrent-files-panel');
+  const tabsWrap = groupEl.querySelector('.expand-tabs-wrap');
   const isDomExpanded = groupEl.classList.contains('expanded');
 
   if (newStatus !== el.dataset.status
     || expanded !== isDomExpanded
-    || (hasFiles && expanded && !panel)
-    || (!expanded && panel)) {
+    || (expanded && !tabsWrap)
+    || (!expanded && tabsWrap)) {
     const tmp = document.createElement('div');
     tmp.innerHTML = buildRowGroup(t);
     groupEl.replaceWith(tmp.firstElementChild);
     return;
   }
 
-  if (hasFiles && expanded && panel) {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = buildTorrentFilesPanel(t);
-    panel.replaceWith(tmp.firstElementChild);
+  // Refresh the files pane if it's visible and has files
+  if (expanded && tabsWrap && (expandedTab.get(t.id) || 'files') === 'files') {
+    const filesPane = tabsWrap.querySelector('[data-tab-pane="files"]');
+    const filesPanel = filesPane?.querySelector('.torrent-files-panel');
+    if (filesPanel && torrentHasFileList(t)) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = buildTorrentFilesPanel(t);
+      filesPanel.replaceWith(tmp.firstElementChild);
+    }
   }
 
   const fill = el.querySelector('.progress-fill');
@@ -3185,7 +3498,47 @@ async function copyText(text) {
   toast('Link copied', 'info');
 }
 
+let toastContainerHome = null;
+
+function hasOpenCsDialog() {
+  return [...document.querySelectorAll('.cs-dialog')].some(d => d.open);
+}
+
+function syncToastLayer() {
+  const layer = document.getElementById('toast-layer');
+  const container = document.getElementById('toast-container');
+  if (!layer || !container) return;
+
+  if (!toastContainerHome) toastContainerHome = container.parentElement;
+
+  if (hasOpenCsDialog()) {
+    layer.appendChild(container);
+    if (layer.open) layer.close();
+    layer.showModal();
+  } else {
+    if (layer.open) layer.close();
+    if (container.parentElement !== toastContainerHome) {
+      toastContainerHome.appendChild(container);
+    }
+  }
+}
+
+function setupToastLayer() {
+  const layer = document.getElementById('toast-layer');
+  layer?.addEventListener('cancel', e => e.preventDefault());
+
+  document.querySelectorAll('.cs-dialog').forEach(dlg => {
+    dlg.addEventListener('close', syncToastLayer);
+    const origShowModal = dlg.showModal.bind(dlg);
+    dlg.showModal = (...args) => {
+      origShowModal(...args);
+      syncToastLayer();
+    };
+  });
+}
+
 function toast(msg, type = 'success') {
+  syncToastLayer();
   const c = document.getElementById('toast-container');
   if (!c) return;
 
@@ -3255,13 +3608,30 @@ function setupGrid() {
       return;
     }
 
+    const tabBtn = e.target.closest('.expand-tab-btn');
+    if (tabBtn) {
+      e.stopPropagation();
+      const groupEl = tabBtn.closest('.file-row-group');
+      if (groupEl) switchExpandTab(groupEl, tabBtn.dataset.tid, tabBtn.dataset.tab);
+      return;
+    }
+
+    const refreshBtn = e.target.closest('.peers-refresh-btn');
+    if (refreshBtn) {
+      e.stopPropagation();
+      const groupEl = refreshBtn.closest('.file-row-group');
+      if (groupEl) {
+        const pane = groupEl.querySelector('[data-tab-pane="peers"]');
+        if (pane) { pane.innerHTML = buildPeersPanel(refreshBtn.dataset.tid, null); }
+        void loadPeersPane(groupEl, refreshBtn.dataset.tid);
+      }
+      return;
+    }
+
     const row = e.target.closest('.file-row');
     if (row && !e.target.closest('button, a, label, input, .row-actions, .row-check')) {
-      const t = torrents[row.dataset.id];
-      if (t && torrentHasFileList(t)) {
-        toggleTorrentExpand(row.dataset.id);
-        return;
-      }
+      toggleTorrentExpand(row.dataset.id);
+      return;
     }
 
     const fileDl = e.target.closest('.torrent-file-local-dl-btn');
@@ -3644,6 +4014,11 @@ function setupMenu() {
     openHistoryDialog();
   });
 
+  document.getElementById('menu-rss')?.addEventListener('click', () => {
+    closeDialog('menu-dialog');
+    openRssDialog();
+  });
+
   document.getElementById('menu-settings')?.addEventListener('click', async () => {
     closeDialog('menu-dialog');
     await openSettings();
@@ -3768,8 +4143,10 @@ function init() {
   setupSpeedGraph();
   setupQueuePanel();
   setupModals();
+  setupToastLayer();
   setupRetry();
   setupHistory();
+  setupRss();
 
   showView('empty');
   document.getElementById('app')?.classList.add('ready');

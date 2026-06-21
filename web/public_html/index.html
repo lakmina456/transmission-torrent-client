@@ -436,6 +436,13 @@
                 <span class="menu-shortcut-title">History</span>
                 <span class="menu-shortcut-desc">Completed downloads</span>
               </button>
+              <button class="menu-shortcut" id="menu-rss" type="button">
+                <span class="menu-shortcut-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
+                </span>
+                <span class="menu-shortcut-title">RSS Feeds</span>
+                <span class="menu-shortcut-desc">Auto-add torrents</span>
+              </button>
               <button class="menu-shortcut" id="menu-settings" type="button">
                 <span class="menu-shortcut-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -962,6 +969,54 @@
   </div>
 </dialog>
 
+<dialog class="cs-dialog rss-dialog" id="rss-dialog" data-no-backdrop-close>
+  <div class="dialog-panel rss-panel">
+    <div class="dialog-header">
+      <div>
+        <h2>RSS feeds</h2>
+        <p class="settings-subtitle">Auto-add torrents from RSS every 10 minutes</p>
+      </div>
+      <button class="dialog-close" data-close="rss-dialog" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="rss-add-form">
+      <div class="settings-field">
+        <label class="settings-label" for="rss-url-input">Feed URL</label>
+        <p class="settings-desc">Paste an RSS or Atom feed URL that contains torrent enclosures or magnet links</p>
+        <div class="settings-input-wrap">
+          <input type="url" id="rss-url-input" class="settings-input" placeholder="https://example.com/feed.rss" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <div class="settings-field">
+        <label class="settings-label" for="rss-filter-input">Title filter <span class="settings-optional">(optional regex)</span></label>
+        <p class="settings-desc">Only add items whose title matches this pattern, e.g. <code>1080p</code> or <code>Show Name</code></p>
+        <div class="settings-input-wrap">
+          <input type="text" id="rss-filter-input" class="settings-input" placeholder="Leave blank to add everything" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <button class="btn-primary btn-sm" id="rss-add-btn" type="button">Add feed</button>
+    </div>
+
+    <div class="rss-feed-section">
+      <div class="rss-feed-section-head">
+        <span class="settings-group-title">Active feeds</span>
+        <button class="btn-secondary btn-sm" id="rss-poll-btn" type="button">Check now</button>
+      </div>
+      <div class="rss-empty" id="rss-empty" hidden>
+        <p>No feeds yet</p>
+        <span>Add a feed URL above to get started</span>
+      </div>
+      <ul class="rss-feed-list" id="rss-feed-list"></ul>
+    </div>
+
+    <div class="dialog-footer">
+      <button class="btn-secondary" data-close="rss-dialog" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
 <dialog class="cs-dialog history-dialog" id="history-dialog" data-no-backdrop-close>
   <div class="dialog-panel history-panel">
     <div class="dialog-header">
@@ -987,6 +1042,7 @@
   </div>
 </dialog>
 
+<dialog id="toast-layer" class="toast-layer" aria-hidden="true"></dialog>
 <div id="toast-container" aria-live="polite" aria-relevant="additions"></div>
 
 <script src="./cloudseed.js"></script>
